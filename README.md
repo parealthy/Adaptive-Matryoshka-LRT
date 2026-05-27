@@ -115,6 +115,20 @@ Key RFT-specific arguments:
 bash inference/run_inference.sh
 ```
 
+### Table 1 Evaluation (Ours)
+
+The repository now includes an Ours-only evaluator for the main paper table on
+MATH-500 and GSM8K:
+
+```bash
+CHECKPOINT_PATH=checkpoints/DSR1-Qwen-1.5B-LRT-Math \
+  bash scripts/eval_table1_ours.sh
+```
+
+The script loads the latent-reasoning checkpoint, evaluates greedy generation on
+`HuggingFaceH4/MATH-500` and `openai/gsm8k`, and writes per-example predictions
+plus accuracy metrics under `eval_outputs/table1_ours/`.
+
 ## Datasets
 
 The paper uses the following datasets for training:
