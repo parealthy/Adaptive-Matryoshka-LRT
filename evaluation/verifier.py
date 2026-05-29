@@ -3,10 +3,19 @@ import argparse
 import json
 import os
 import re
+from pathlib import Path
 
-import torch
-from tqdm import tqdm
-from vllm import LLM, SamplingParams
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DATASET_DIR = PROJECT_ROOT / "eval_outputs" / "math" / "lrt-math"
+
+
+def progress(iterable, desc=None):
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        return iterable
+    return tqdm(iterable, desc=desc)
 
 
 VERIFICATION_PROMPT_TEMPLATE = """You are a mathematical answer validation system. Your task is to determine if two mathematical expressions are equivalent.
@@ -140,6 +149,9 @@ def list_result_files(dataset_dir, tasks, gpqa=False):
 
 
 def verify_responses(args):
+    import torch
+    from vllm import LLM, SamplingParams
+
     print(f"Loading verification model: {args.model}")
     tensor_parallel_size = args.tensor_parallel_size or max(torch.cuda.device_count(), 1)
     llm = LLM(
@@ -175,7 +187,7 @@ def verify_responses(args):
         verified_count = 0
         correct_count = 0
 
-        for start in tqdm(range(0, total_problems, args.batch_size), desc=f"Verifying {file_name}"):
+        for start in progress(range(0, total_problems, args.batch_size), desc=f"Verifying {file_name}"):
             batch = problems[start : start + args.batch_size]
             batch_prompts = []
             valid_indices = []
@@ -242,7 +254,12 @@ def verify_responses(args):
 def parse_args():
     parser = argparse.ArgumentParser(description="Verify math responses using LLM equivalence judging.")
     parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-7B", help="Verification model name.")
-    parser.add_argument("--dataset_dir", type=str, required=True, help="Directory containing result JSON files.")
+    parser.add_argument(
+        "--dataset_dir",
+        type=str,
+        default=str(DEFAULT_DATASET_DIR),
+        help="Directory containing result JSON files.",
+    )
     parser.add_argument("--output_dir", type=str, default=None, help="Directory to save verified results.")
     parser.add_argument("--tasks", type=str, nargs="+", default=["all"], help="Tasks/files to verify or 'all'.")
     parser.add_argument("--batch_size", type=int, default=16)

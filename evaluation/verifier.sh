@@ -13,16 +13,17 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-mkdir -p "$SCRIPT_DIR/logs"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+mkdir -p "$REPO_ROOT/logs"
 
 export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
 
-MODEL_NAME="${MODEL_NAME:-DeepSeek-R1-Distill-Qwen-1.5B}"
-DATASET_DIR="${DATASET_DIR:-/ShorterBetter/eval_data/outputs/math/$MODEL_NAME}"
+MODEL_NAME="${MODEL_NAME:-lrt-math}"
+DATASET_DIR="${DATASET_DIR:-$REPO_ROOT/eval_outputs/math/$MODEL_NAME}"
 OUTPUT_DIR="${OUTPUT_DIR:-$DATASET_DIR/verified}"
 VERIFIER_MODEL="${VERIFIER_MODEL:-Qwen/Qwen2.5-7B}"
 BATCH_SIZE="${BATCH_SIZE:-16}"
-TASKS="${TASKS:-all}"
+TASKS="${TASKS:-math500 gsm8k}"
 
 python "$SCRIPT_DIR/verifier.py" \
     --model "$VERIFIER_MODEL" \
