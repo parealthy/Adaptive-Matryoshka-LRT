@@ -18,7 +18,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "eval" / "math"
-DEFAULT_DATA_ROOT = Path(os.environ.get("LRT_DATA_ROOT", PROJECT_ROOT / "data" / "datasets"))
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "eval_outputs" / "math"
 DEFAULT_MODEL_PATH = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 DEFAULT_REASONING_NET_PATH = "Qwen/Qwen3-Embedding-0.6B"
@@ -347,7 +346,7 @@ class VLLMGenerator:
         return completions, prompt_texts
 
 
-def load_builtin_task(task_name: str, data_root: Path) -> tuple[list[dict[str, Any]], str]:
+def load_builtin_task(task_name: str, data_dir: Path) -> tuple[list[dict[str, Any]], str]:
     from datasets import DatasetDict, load_dataset, load_from_disk
 
     def resolve_split(dataset_obj, split: str):
@@ -356,9 +355,13 @@ def load_builtin_task(task_name: str, data_root: Path) -> tuple[list[dict[str, A
         return dataset_obj
 
     if task_name == "math500":
+        local_json = data_dir / "math500.json"
+        if local_json.exists():
+            return load_local_task(data_dir, "math500")
+
         dataset_id = "HuggingFaceH4/MATH-500"
         split = "test"
-        local_path = data_root / dataset_id
+        local_path = data_dir / dataset_id
         if local_path.exists():
             try:
                 dataset = resolve_split(load_from_disk(str(local_path)), split)
@@ -369,9 +372,13 @@ def load_builtin_task(task_name: str, data_root: Path) -> tuple[list[dict[str, A
         return [project_math500(dict(dataset[i])) for i in range(len(dataset))], task_name
 
     if task_name == "gsm8k":
+        local_json = data_dir / "gsm8k.json"
+        if local_json.exists():
+            return load_local_task(data_dir, "gsm8k")
+
         dataset_id = "openai/gsm8k"
         split = "test"
-        local_path = data_root / dataset_id
+        local_path = data_dir / dataset_id
         if local_path.exists():
             try:
                 dataset = resolve_split(load_from_disk(str(local_path)), split)
@@ -496,7 +503,7 @@ def resolve_tasks(args) -> list[str]:
 
 def load_task(args, task_name: str) -> tuple[list[dict[str, Any]], str]:
     if task_name in BUILTIN_TASKS:
-        return load_builtin_task(task_name, Path(args.data_root))
+        return load_builtin_task(task_name, Path(args.data_dir))
     return load_local_task(Path(args.data_dir), task_name)
 
 
@@ -573,7 +580,6 @@ def parse_args():
     parser.add_argument("--model_name", default=None)
     parser.add_argument("--tokenizer_path", default=None)
     parser.add_argument("--data_dir", default=str(DEFAULT_DATA_DIR))
-    parser.add_argument("--data_root", default=str(DEFAULT_DATA_ROOT))
     parser.add_argument("--output_dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--tasks", nargs="+", default=["math500", "gsm8k"])
     parser.add_argument("--prompt_template", default=REPO_MATH_PROMPT_TEMPLATE)

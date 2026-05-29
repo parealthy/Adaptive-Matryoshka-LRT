@@ -24,7 +24,6 @@ REASONING_NET_PATH="${REASONING_NET_PATH:-Qwen/Qwen3-Embedding-0.6B}"
 CHECKPOINT_PATH="${CHECKPOINT_PATH:-$REPO_ROOT/checkpoints/DSR1-Qwen-1.5B-LRT-Math}"
 MODEL_NAME="${MODEL_NAME:-lrt-math}"
 DATA_DIR="${DATA_DIR:-$REPO_ROOT/data/eval/math}"
-DATA_ROOT="${DATA_ROOT:-${LRT_DATA_ROOT:-$REPO_ROOT/data/datasets}}"
 OUTPUT_DIR="${OUTPUT_DIR:-$REPO_ROOT/eval_outputs/math}"
 BATCH_SIZE="${BATCH_SIZE:-4}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-4096}"
@@ -43,7 +42,6 @@ python "$SCRIPT_DIR/math_eval.py" \
     --checkpoint_path "$CHECKPOINT_PATH" \
     --model_name "$MODEL_NAME" \
     --data_dir "$DATA_DIR" \
-    --data_root "$DATA_ROOT" \
     --output_dir "$OUTPUT_DIR" \
     --tasks $TASKS \
     --batch_size "$BATCH_SIZE" \
