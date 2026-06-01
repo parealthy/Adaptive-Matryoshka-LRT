@@ -325,7 +325,10 @@ class LengthElasticLatentTransformerReasoningModel(torch.nn.Module):
             dim=1,
         ).long()
 
-        labels = labels.masked_fill(labels == self.pad_token_id, -100).long()
+        # Mask padding by attention mask rather than token id. Some chat
+        # tokenizers reuse eos as pad, and masking by pad_token_id would remove
+        # the supervised EOS target.
+        labels = labels.masked_fill(labels_mask == 0, -100).long()
         ignore_prompt = torch.full(
             (labels.size(0), prompt_embeddings.size(1)),
             -100,

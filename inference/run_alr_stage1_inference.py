@@ -162,6 +162,7 @@ class ALRStage1RandomLengthInteractive:
         max_new_tokens: int = 2048,
         device: str = "cuda",
         seed: Optional[int] = None,
+        fixed_latent_trajectory_length: Optional[int] = None,
     ):
         self.prompt_max_length = prompt_max_length
         self.max_new_tokens = max_new_tokens
@@ -171,8 +172,19 @@ class ALRStage1RandomLengthInteractive:
 
         if not self.latent_trajectory_lengths:
             raise ValueError("latent_trajectory_lengths must not be empty.")
+        if fixed_latent_trajectory_length is not None:
+            fixed_latent_trajectory_length = int(fixed_latent_trajectory_length)
+            if fixed_latent_trajectory_length not in self.latent_trajectory_lengths:
+                raise ValueError(
+                    "fixed_latent_trajectory_length must be one of "
+                    f"{self.latent_trajectory_lengths}, got "
+                    f"{fixed_latent_trajectory_length}."
+                )
+        self.fixed_latent_trajectory_length = fixed_latent_trajectory_length
 
         print(f"  Latent length candidates: {self.latent_trajectory_lengths}")
+        if self.fixed_latent_trajectory_length is not None:
+            print(f"  Fixed latent length: {self.fixed_latent_trajectory_length}")
 
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_path,
@@ -204,6 +216,8 @@ class ALRStage1RandomLengthInteractive:
         _load_reasoning_weights(self.reasoning_network, checkpoint_path)
 
     def sample_latent_length(self) -> int:
+        if self.fixed_latent_trajectory_length is not None:
+            return self.fixed_latent_trajectory_length
         return self.rng.choice(self.latent_trajectory_lengths)
 
     @torch.no_grad()
@@ -290,6 +304,12 @@ def parse_args():
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--question", type=str, default=None)
+    parser.add_argument(
+        "--fixed_latent_trajectory_length",
+        type=int,
+        default=None,
+        help="Use one fixed latent length for debugging instead of random sampling.",
+    )
     return parser.parse_args()
 
 
@@ -310,6 +330,7 @@ def main():
         max_new_tokens=args.max_new_tokens,
         device=args.device,
         seed=args.seed,
+        fixed_latent_trajectory_length=args.fixed_latent_trajectory_length,
     )
 
     if args.question:
@@ -330,9 +351,29 @@ def main():
 
         if not user_input:
             continue
+        if user_input == ">>>":
+            continue
         if user_input.lower() in ("exit", "quit"):
             print("Bye!")
             break
+        if user_input.lower() == ":paste":
+            print("Paste your multi-line question. End with a line containing ':end'.")
+            lines = []
+            while True:
+                try:
+                    line = input()
+                except (EOFError, KeyboardInterrupt):
+                    print("\n[Paste interrupted]\n")
+                    lines = []
+                    break
+                if line.strip().lower() == ":end":
+                    break
+                lines.append(line)
+            user_input = "\n".join(lines).strip()
+            if not user_input:
+                continue
+        if not any(char.isalnum() for char in user_input):
+            continue
 
         try:
             answer, active_latent_length = model.generate(

@@ -24,6 +24,7 @@ TEMPERATURE="${TEMPERATURE:-0.0}"
 DEVICE="${DEVICE:-cuda}"
 SEED="${SEED:-}"
 QUESTION="${QUESTION:-}"
+FIXED_LATENT_TRAJECTORY_LENGTH="${FIXED_LATENT_TRAJECTORY_LENGTH:-}"
 
 EXTRA_ARGS=()
 if [ -n "$LATENT_TRAJECTORY_LENGTHS" ]; then
@@ -35,6 +36,9 @@ fi
 if [ -n "$QUESTION" ]; then
     EXTRA_ARGS+=(--question "$QUESTION")
 fi
+if [ -n "$FIXED_LATENT_TRAJECTORY_LENGTH" ]; then
+    EXTRA_ARGS+=(--fixed_latent_trajectory_length "$FIXED_LATENT_TRAJECTORY_LENGTH")
+fi
 
 echo "================================================"
 echo "  ALR Stage1 Random-Length Inference"
@@ -45,6 +49,9 @@ if [ -n "$LATENT_TRAJECTORY_LENGTHS" ]; then
     echo "  Lengths:      $LATENT_TRAJECTORY_LENGTHS"
 else
     echo "  Lengths:      from checkpoint config or default"
+fi
+if [ -n "$FIXED_LATENT_TRAJECTORY_LENGTH" ]; then
+    echo "  Fixed length: $FIXED_LATENT_TRAJECTORY_LENGTH"
 fi
 echo "================================================"
 
