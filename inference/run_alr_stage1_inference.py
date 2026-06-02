@@ -33,6 +33,22 @@ from modeling.alr_stage1 import LengthElasticTransformerReasoningNet
 
 
 DEFAULT_LATENT_TRAJECTORY_LENGTHS = [64, 128, 192, 256]
+USE_SYSTEM_PROMPT_ENV = "ALR_USE_SYSTEM_PROMPT"
+SYSTEM_PROMPT_ENV = "ALR_SYSTEM_PROMPT"
+DEFAULT_SYSTEM_PROMPT = (
+    r"Let's think step by step and output the final answer within \boxed{}."
+)
+
+
+def env_flag_enabled(name: str) -> bool:
+    value = os.environ.get(name, "").strip().lower()
+    return value in {"1", "true", "yes", "y", "on"}
+
+
+def resolve_system_prompt_from_env() -> Optional[str]:
+    if not env_flag_enabled(USE_SYSTEM_PROMPT_ENV):
+        return None
+    return os.environ.get(SYSTEM_PROMPT_ENV, "").strip() or DEFAULT_SYSTEM_PROMPT
 
 
 def parse_latent_trajectory_lengths(value: Optional[str]) -> list[int]:
@@ -163,12 +179,14 @@ class ALRStage1RandomLengthInteractive:
         device: str = "cuda",
         seed: Optional[int] = None,
         fixed_latent_trajectory_length: Optional[int] = None,
+        system_prompt: Optional[str] = None,
     ):
         self.prompt_max_length = prompt_max_length
         self.max_new_tokens = max_new_tokens
         self.device = device
         self.latent_trajectory_lengths = latent_trajectory_lengths
         self.rng = random.Random(seed)
+        self.system_prompt = system_prompt
 
         if not self.latent_trajectory_lengths:
             raise ValueError("latent_trajectory_lengths must not be empty.")
@@ -185,6 +203,8 @@ class ALRStage1RandomLengthInteractive:
         print(f"  Latent length candidates: {self.latent_trajectory_lengths}")
         if self.fixed_latent_trajectory_length is not None:
             print(f"  Fixed latent length: {self.fixed_latent_trajectory_length}")
+        if self.system_prompt:
+            print(f"  System prompt enabled via {USE_SYSTEM_PROMPT_ENV}.")
 
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_path,
@@ -224,7 +244,10 @@ class ALRStage1RandomLengthInteractive:
     def generate(self, user_input: str, temperature: float = 0.0) -> tuple[str, int]:
         active_latent_length = self.sample_latent_length()
 
-        messages = [{"role": "user", "content": user_input}]
+        messages = []
+        if self.system_prompt:
+            messages.append({"role": "system", "content": self.system_prompt})
+        messages.append({"role": "user", "content": user_input})
         prompt_text = self.tokenizer.apply_chat_template(
             messages,
             add_generation_prompt=True,
@@ -319,6 +342,7 @@ def main():
         args.checkpoint_path,
         args.latent_trajectory_lengths,
     )
+    system_prompt = resolve_system_prompt_from_env()
 
     print("\nLoading ALR Stage1 random-length inference model...")
     model = ALRStage1RandomLengthInteractive(
@@ -331,6 +355,7 @@ def main():
         device=args.device,
         seed=args.seed,
         fixed_latent_trajectory_length=args.fixed_latent_trajectory_length,
+        system_prompt=system_prompt,
     )
 
     if args.question:
