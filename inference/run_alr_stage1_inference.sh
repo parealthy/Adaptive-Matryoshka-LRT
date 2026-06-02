@@ -25,8 +25,6 @@ DEVICE="${DEVICE:-cuda}"
 SEED="${SEED:-}"
 QUESTION="${QUESTION:-}"
 FIXED_LATENT_TRAJECTORY_LENGTH="${FIXED_LATENT_TRAJECTORY_LENGTH:-}"
-ALR_USE_SYSTEM_PROMPT="${ALR_USE_SYSTEM_PROMPT:-0}"
-ALR_SYSTEM_PROMPT="${ALR_SYSTEM_PROMPT:-}"
 
 EXTRA_ARGS=()
 if [ -n "$LATENT_TRAJECTORY_LENGTHS" ]; then
@@ -54,11 +52,6 @@ else
 fi
 if [ -n "$FIXED_LATENT_TRAJECTORY_LENGTH" ]; then
     echo "  Fixed length: $FIXED_LATENT_TRAJECTORY_LENGTH"
-fi
-if [[ "$ALR_USE_SYSTEM_PROMPT" =~ ^(1|true|TRUE|yes|YES|y|Y|on|ON)$ ]]; then
-    echo "  SystemPrompt: enabled"
-else
-    echo "  SystemPrompt: disabled"
 fi
 echo "================================================"
 
