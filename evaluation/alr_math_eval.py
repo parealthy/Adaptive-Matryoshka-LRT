@@ -29,7 +29,7 @@ from utils.reward_func import accuracy_reward
 
 DEFAULT_LATENT_TRAJECTORY_LENGTHS = [64, 128, 192, 256]
 DEFAULT_PROMPT_TEMPLATE = (
-    "{problem} Let's think step by step and output the final answer within \\boxed{}."
+    "{problem} Let's think step by step and output the final answer within \\boxed{{}}."
 )
 BUILTIN_TASKS = {"math500", "gsm8k"}
 
@@ -637,6 +637,19 @@ def save_json(path: Path, payload: Any) -> None:
         handle.write("\n")
 
 
+def render_prompt_template(template: str, problem: str) -> str:
+    try:
+        return template.format(problem=problem)
+    except IndexError as exc:
+        if "{}" not in template:
+            raise
+        fixed_template = template.replace("{}", "{{}}")
+        try:
+            return fixed_template.format(problem=problem)
+        except Exception:
+            raise exc
+
+
 def evaluate_task(
     generator: ALRBatchGenerator,
     records: list[dict[str, Any]],
@@ -662,7 +675,7 @@ def evaluate_task(
         batch = records[start : start + args.batch_size]
         batch_indices = record_indices[start : start + args.batch_size]
         prompts = [
-            args.prompt_template.format(problem=record["problem"])
+            render_prompt_template(args.prompt_template, record["problem"])
             for record in batch
         ]
         generation = generator.generate_batch(prompts, method)
