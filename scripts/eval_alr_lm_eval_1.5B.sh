@@ -8,6 +8,11 @@ DIFFICULTY_CHECKPOINT_PATH="${DIFFICULTY_CHECKPOINT_PATH:-checkpoints/ALR-Stage2
 HARNESS_PATH="${HARNESS_PATH:-/mnt/pami23/dzhu/s1/eval/lm-evaluation-harness}"
 LATENT_TRAJECTORY_LENGTHS="${LATENT_TRAJECTORY_LENGTHS:-64,128,192,256}"
 
+if [ -z "${METHODS+x}" ] && [ -n "${METHODs:-}" ]; then
+    echo "Warning: detected METHODs; using it as METHODS."
+    METHODS="$METHODs"
+fi
+
 OUTPUT_DIR="${OUTPUT_DIR:-eval_outputs/alr_lm_eval_1.5B}"
 TASKS="${TASKS:-gsm8k math500}"
 METHODS="${METHODS:-fixed-64 fixed-128 fixed-192 fixed-256 random adaptive}"
@@ -28,6 +33,34 @@ APPLY_CHAT_TEMPLATE="${APPLY_CHAT_TEMPLATE:-false}"
 export ALR_LM_EVAL_DIST_BACKEND="${ALR_LM_EVAL_DIST_BACKEND:-gloo}"
 export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-1}"
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
+
+TASKS="${TASKS//math-500/math500}"
+
+python - "$HARNESS_PATH" <<'PY'
+import importlib.util
+import sys
+
+harness_path = sys.argv[1]
+missing = [
+    package
+    for package in ("sacrebleu", "numpy", "datasets", "transformers", "accelerate")
+    if importlib.util.find_spec(package) is None
+]
+if missing:
+    print("Missing Python packages required by lm-evaluation-harness: " + ", ".join(missing))
+    print("Install them in the active environment, for example:")
+    print(f"  pip install -e {harness_path}")
+    print("or at minimum:")
+    print("  pip install " + " ".join(missing))
+    sys.exit(1)
+
+import transformers
+if not hasattr(transformers, "AutoModelForVision2Seq"):
+    print(
+        "Warning: transformers has no AutoModelForVision2Seq; "
+        "run_lm_eval_alr.py will apply a text-only compatibility shim."
+    )
+PY
 
 read -r -a TASK_ARGS <<< "$TASKS"
 read -r -a METHOD_ARGS <<< "$METHODS"

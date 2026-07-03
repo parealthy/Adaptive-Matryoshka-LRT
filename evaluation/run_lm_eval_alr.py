@@ -21,6 +21,14 @@ def parse_list(value: str) -> list[str]:
     return [item for item in value.replace(",", " ").split() if item]
 
 
+def normalize_task_name(task: str) -> str:
+    aliases = {
+        "math-500": "math500",
+        "MATH-500": "math500",
+    }
+    return aliases.get(task, task)
+
+
 def parse_limit(value: str):
     parsed = float(value)
     if parsed.is_integer():
@@ -39,6 +47,24 @@ def dump_json(path: Path, payload: Any) -> None:
         handle.write("\n")
 
 
+def patch_transformers_harness_compat() -> None:
+    import transformers
+
+    if hasattr(transformers, "AutoModelForVision2Seq"):
+        return
+    fallback = getattr(
+        transformers,
+        "AutoModelForSeq2SeqLM",
+        getattr(transformers, "AutoModelForCausalLM", None),
+    )
+    if fallback is None:
+        raise RuntimeError(
+            "transformers is missing AutoModelForVision2Seq and no text fallback "
+            "AutoModel class is available. Upgrade transformers."
+        )
+    transformers.AutoModelForVision2Seq = fallback
+
+
 def import_harness(harness_path: Path):
     harness_path = harness_path.expanduser().resolve()
     if not harness_path.exists():
@@ -48,6 +74,7 @@ def import_harness(harness_path: Path):
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
 
+    patch_transformers_harness_compat()
     import evaluation.lm_eval_alr_model  # noqa: F401
     import lm_eval
     from lm_eval import evaluator
@@ -242,6 +269,7 @@ def parse_args():
 
 def main() -> None:
     args = parse_args()
+    args.tasks = [normalize_task_name(task) for task in args.tasks]
     harness_path = Path(args.harness_path)
     _, evaluator, TaskManager = import_harness(harness_path)
 
