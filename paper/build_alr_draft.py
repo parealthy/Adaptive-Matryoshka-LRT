@@ -75,6 +75,14 @@ def get_metric(summary: Optional[dict[str, Any]], method: str, task: str, key: s
     return summary.get("results", {}).get(method, {}).get(task, {}).get(key)
 
 
+def get_saving_metric(summary: Optional[dict[str, Any]], method: str, task: str):
+    return (
+        get_metric(summary, method, task, "latent_cost_saving_vs_fixed_256")
+        if get_metric(summary, method, task, "latent_cost_saving_vs_fixed_256") is not None
+        else get_metric(summary, method, task, "latent_cost_saving_vs_fixed_max")
+    )
+
+
 def build_results_table(summary: Optional[dict[str, Any]]) -> str:
     methods = collect_methods(summary)
     tasks = collect_tasks(summary)
@@ -93,7 +101,7 @@ def build_results_table(summary: Optional[dict[str, Any]]) -> str:
             for task in tasks
         ]
         saving_values = [
-            get_metric(summary, method, task, "latent_cost_saving_vs_fixed_max")
+            get_saving_metric(summary, method, task)
             for task in tasks
         ]
         latent_values = [value for value in latent_values if value is not None]
@@ -188,6 +196,7 @@ def build_draft(
     model_path = config.get("model_path", "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
     stage1_path = config.get("stage1_checkpoint_path", "checkpoints/ALR-Stage1-DSR1-Qwen-1.5B")
     stage2_path = config.get("difficulty_checkpoint_path", "checkpoints/ALR-Stage2-Difficulty-DSR1-Qwen-1.5B")
+    accuracy_source = config.get("accuracy_source", "lm-evaluation-harness")
 
     return f"""# Adaptive Length-Elastic Latent Reasoning for Efficient Mathematical Inference
 
@@ -219,7 +228,7 @@ ALR has two stages.
 - Latent lengths: 64, 128, 192, 256
 - Evaluation tasks: GSM8K and MATH-500
 - Main baselines: fixed 64/128/192/256 latent lengths, random uniform length, and adaptive ALR
-- Metrics: answer accuracy, average latent length, and latent cost saving relative to fixed-256
+- Metrics: answer accuracy from `{accuracy_source}`, average latent length, and latent cost saving relative to fixed-256
 
 ## 4. Results
 
@@ -261,7 +270,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Build the English Markdown draft for the ALR experiment.",
     )
-    parser.add_argument("--eval_dir", default="eval_outputs/alr_full_1.5B")
+    parser.add_argument("--eval_dir", default="eval_outputs/alr_lm_eval_1.5B")
     parser.add_argument("--stage2_metrics", default=None)
     parser.add_argument("--output", default="paper/alr_draft.md")
     return parser.parse_args()
