@@ -71,6 +71,63 @@ STAGE2_DATASETS = [
 ]
 
 
+@dataclass(frozen=True)
+class DistributedEnv:
+    rank: int
+    local_rank: int
+    world_size: int
+
+    @property
+    def is_distributed(self) -> bool:
+        return self.world_size > 1
+
+    @property
+    def is_main_process(self) -> bool:
+        return self.rank == 0
+
+
+def get_distributed_env() -> DistributedEnv:
+    return DistributedEnv(
+        rank=int(os.environ.get("RANK", "0")),
+        local_rank=int(os.environ.get("LOCAL_RANK", "0")),
+        world_size=int(os.environ.get("WORLD_SIZE", "1")),
+    )
+
+
+def setup_distributed(env: DistributedEnv) -> None:
+    if not env.is_distributed:
+        return
+
+    import torch
+    import torch.distributed as dist
+
+    if torch.cuda.is_available():
+        torch.cuda.set_device(env.local_rank)
+    if dist.is_available() and not dist.is_initialized():
+        backend = "nccl" if torch.cuda.is_available() else "gloo"
+        dist.init_process_group(backend=backend, init_method="env://")
+
+
+def distributed_barrier(env: DistributedEnv) -> None:
+    if not env.is_distributed:
+        return
+
+    import torch.distributed as dist
+
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier()
+
+
+def cleanup_distributed(env: DistributedEnv) -> None:
+    if not env.is_distributed:
+        return
+
+    import torch.distributed as dist
+
+    if dist.is_available() and dist.is_initialized():
+        dist.destroy_process_group()
+
+
 def parse_latent_trajectory_lengths(value: Optional[str]) -> list[int]:
     if not value:
         return list(DEFAULT_LATENT_TRAJECTORY_LENGTHS)
@@ -105,10 +162,18 @@ def resolve_hidden_size(config) -> int:
     raise ValueError("Failed to resolve hidden_size from the base model config.")
 
 
-def resolve_device_map(device: str):
+def resolve_device_map(device: str, env: Optional[DistributedEnv] = None):
     if device == "auto":
-        return "auto"
+        import torch
+
+        if not torch.cuda.is_available():
+            return {"": "cpu"}
+        if env is not None and env.is_distributed:
+            return {"": env.local_rank}
+        return {"": 0}
     if device == "cuda":
+        if env is not None and env.is_distributed:
+            return {"": env.local_rank}
         return {"": 0}
     if device.startswith("cuda:"):
         return {"": int(device.split(":", 1)[1])}
@@ -260,11 +325,36 @@ def render_prompts(tokenizer, records: list[dict[str, Any]]) -> list[str]:
     ]
 
 
-def cache_features_for_records(args, records: list[dict[str, Any]], output_path: Path):
+def cache_features_for_records(
+    args,
+    records: list[dict[str, Any]],
+    output_path: Path,
+    env: Optional[DistributedEnv] = None,
+    indices: Optional[list[int]] = None,
+):
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
+    if indices is None:
+        indices = list(range(len(records)))
+    if len(indices) != len(records):
+        raise ValueError("indices and records must have the same length.")
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not records:
+        torch.save(
+            {
+                "features": torch.empty((0, 0), dtype=torch.float32),
+                "labels": torch.empty((0,), dtype=torch.long),
+                "target_lengths": torch.empty((0,), dtype=torch.long),
+                "sources": [],
+                "indices": torch.tensor(indices, dtype=torch.long),
+            },
+            output_path,
+        )
+        print(f"Saved empty cached shard to {output_path}")
+        return
+
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_path,
         trust_remote_code=not args.no_trust_remote_code,
@@ -278,7 +368,7 @@ def cache_features_for_records(args, records: list[dict[str, Any]], output_path:
     model = AutoModelForCausalLM.from_pretrained(
         args.model_path,
         torch_dtype=dtype_from_arg(args.torch_dtype),
-        device_map=resolve_device_map(args.device),
+        device_map=resolve_device_map(args.device, env),
         trust_remote_code=not args.no_trust_remote_code,
         low_cpu_mem_usage=True,
     )
@@ -322,35 +412,169 @@ def cache_features_for_records(args, records: list[dict[str, Any]], output_path:
             all_labels.extend(int(record["label"]) for record in batch_records)
             all_lengths.extend(int(record["target_length"]) for record in batch_records)
             all_sources.extend(str(record["source"]) for record in batch_records)
-            print(f"Cached {end}/{len(records)} examples", flush=True)
+            prefix = f"rank={env.rank} " if env and env.is_distributed else ""
+            print(f"{prefix}Cached {end}/{len(records)} examples", flush=True)
 
     payload = {
         "features": torch.cat(all_features, dim=0),
         "labels": torch.tensor(all_labels, dtype=torch.long),
         "target_lengths": torch.tensor(all_lengths, dtype=torch.long),
         "sources": all_sources,
+        "indices": torch.tensor(indices, dtype=torch.long),
     }
     torch.save(payload, output_path)
     print(f"Saved cached features to {output_path}")
+    del model
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
-def load_or_cache_features(args, split_name: str, records: list[dict[str, Any]]):
+def _expected_shard_indices(total_count: int, rank: int, world_size: int) -> list[int]:
+    return list(range(rank, total_count, world_size))
+
+
+def _payload_matches(payload, expected_count: int, expected_indices: Optional[list[int]] = None) -> bool:
+    if int(payload["features"].size(0)) != expected_count:
+        return False
+    if expected_indices is None:
+        return True
+    cached_indices = payload.get("indices")
+    if cached_indices is None:
+        return False
+    return [int(index) for index in cached_indices.tolist()] == expected_indices
+
+
+def merge_feature_shards(shard_paths: list[Path]):
     import torch
+
+    payloads = [torch.load(path, map_location="cpu") for path in shard_paths]
+    rows = []
+    for payload in payloads:
+        indices = payload["indices"].tolist()
+        for row_idx, global_idx in enumerate(indices):
+            rows.append(
+                (
+                    int(global_idx),
+                    payload["features"][row_idx],
+                    int(payload["labels"][row_idx]),
+                    int(payload["target_lengths"][row_idx]),
+                    str(payload["sources"][row_idx]),
+                )
+            )
+    rows.sort(key=lambda row: row[0])
+    if not rows:
+        raise RuntimeError("No feature rows were found while merging shards.")
+    return {
+        "features": torch.stack([row[1] for row in rows], dim=0),
+        "labels": torch.tensor([row[2] for row in rows], dtype=torch.long),
+        "target_lengths": torch.tensor([row[3] for row in rows], dtype=torch.long),
+        "sources": [row[4] for row in rows],
+        "indices": torch.tensor([row[0] for row in rows], dtype=torch.long),
+    }
+
+
+def load_or_cache_features_distributed(
+    args,
+    split_name: str,
+    records: list[dict[str, Any]],
+    env: DistributedEnv,
+):
+    import torch
+
+    merged_cache_path = Path(args.cache_dir) / f"{split_name}_features.pt"
+    if merged_cache_path.exists() and not args.overwrite_cache:
+        payload = torch.load(merged_cache_path, map_location="cpu")
+        if _payload_matches(payload, len(records)):
+            if env.is_main_process:
+                print(f"Loading merged cached {split_name} features from {merged_cache_path}")
+            distributed_barrier(env)
+            return payload if env.is_main_process else None
+        if env.is_main_process:
+            print(
+                f"Merged cached {split_name} count does not match the requested "
+                "count; recomputing shards.",
+                flush=True,
+            )
+        distributed_barrier(env)
+
+    shard_indices = _expected_shard_indices(
+        total_count=len(records),
+        rank=env.rank,
+        world_size=env.world_size,
+    )
+    shard_records = [records[index] for index in shard_indices]
+    shard_dir = Path(args.cache_dir) / f"{split_name}_shards_world{env.world_size}"
+    shard_path = shard_dir / f"rank{env.rank:05d}.pt"
+
+    needs_cache = True
+    if shard_path.exists() and not args.overwrite_cache:
+        payload = torch.load(shard_path, map_location="cpu")
+        needs_cache = not _payload_matches(
+            payload,
+            expected_count=len(shard_records),
+            expected_indices=shard_indices,
+        )
+    if needs_cache:
+        cache_features_for_records(
+            args,
+            shard_records,
+            shard_path,
+            env=env,
+            indices=shard_indices,
+        )
+    else:
+        print(f"rank={env.rank} Reusing cached shard {shard_path}", flush=True)
+
+    distributed_barrier(env)
+
+    if env.is_main_process:
+        shard_paths = [
+            shard_dir / f"rank{rank:05d}.pt"
+            for rank in range(env.world_size)
+        ]
+        missing = [str(path) for path in shard_paths if not path.exists()]
+        if missing:
+            raise FileNotFoundError(f"Missing feature shard(s): {missing}")
+        merged_payload = merge_feature_shards(shard_paths)
+        if int(merged_payload["features"].size(0)) != len(records):
+            raise RuntimeError(
+                f"Merged {split_name} cache has "
+                f"{merged_payload['features'].size(0)} rows; expected {len(records)}."
+            )
+        merged_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(merged_payload, merged_cache_path)
+        print(f"Saved merged {split_name} features to {merged_cache_path}")
+        distributed_barrier(env)
+        return merged_payload
+
+    distributed_barrier(env)
+    return None
+
+
+def load_or_cache_features(
+    args,
+    split_name: str,
+    records: list[dict[str, Any]],
+    env: Optional[DistributedEnv] = None,
+):
+    import torch
+
+    if env is not None and env.is_distributed:
+        return load_or_cache_features_distributed(args, split_name, records, env)
 
     cache_path = Path(args.cache_dir) / f"{split_name}_features.pt"
     if cache_path.exists() and not args.overwrite_cache:
         print(f"Loading cached {split_name} features from {cache_path}")
         payload = torch.load(cache_path, map_location="cpu")
-        cached_count = int(payload["features"].size(0))
-        if cached_count == len(records):
+        if _payload_matches(payload, len(records)):
             return payload
         print(
-            f"Cached {split_name} count ({cached_count}) does not match the "
+            f"Cached {split_name} count ({payload['features'].size(0)}) does not match the "
             f"requested count ({len(records)}); recomputing.",
             flush=True,
         )
 
-    cache_features_for_records(args, records, cache_path)
+    cache_features_for_records(args, records, cache_path, env=env)
     return torch.load(cache_path, map_location="cpu")
 
 
@@ -580,7 +804,14 @@ def parse_args():
     parser.add_argument("--mlp_hidden_size", type=int, default=1024)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--torch_dtype", default="bf16")
-    parser.add_argument("--device", default="cuda:0")
+    parser.add_argument(
+        "--device",
+        default="auto",
+        help=(
+            "Device for frozen-LLM feature caching. Use 'auto' with accelerate "
+            "single-node multi-GPU launch so each rank uses its LOCAL_RANK GPU."
+        ),
+    )
     parser.add_argument("--head_device", choices=("cuda", "cpu"), default="cuda")
     parser.add_argument("--overwrite_cache", action="store_true")
     parser.add_argument("--no_trust_remote_code", action="store_true")
@@ -589,13 +820,22 @@ def parse_args():
 
 def main():
     args = parse_args()
+    env = get_distributed_env()
+    setup_distributed(env)
+    if env.is_distributed:
+        print(
+            f"distributed_cache: rank={env.rank} local_rank={env.local_rank} "
+            f"world_size={env.world_size}",
+            flush=True,
+        )
     if args.limit is not None and args.limit_per_class is None:
         args.limit_per_class = args.limit
     if args.validation_ratio <= 0 or args.validation_ratio >= 1:
         raise ValueError("--validation_ratio must be between 0 and 1.")
 
     latent_trajectory_lengths = resolve_latent_trajectory_lengths(args)
-    print(f"latent_trajectory_lengths={latent_trajectory_lengths}")
+    if env.is_main_process:
+        print(f"latent_trajectory_lengths={latent_trajectory_lengths}")
 
     records = build_records(
         latent_trajectory_lengths=latent_trajectory_lengths,
@@ -608,10 +848,15 @@ def main():
         validation_ratio=args.validation_ratio,
         seed=args.seed,
     )
-    print(f"records={len(records)} train={len(train_records)} validation={len(validation_records)}")
+    if env.is_main_process:
+        print(f"records={len(records)} train={len(train_records)} validation={len(validation_records)}")
 
-    train_payload = load_or_cache_features(args, "train", train_records)
-    validation_payload = load_or_cache_features(args, "validation", validation_records)
+    train_payload = load_or_cache_features(args, "train", train_records, env)
+    validation_payload = load_or_cache_features(args, "validation", validation_records, env)
+    if not env.is_main_process:
+        cleanup_distributed(env)
+        return
+
     _, metrics = train_head(
         args,
         latent_trajectory_lengths,
@@ -627,6 +872,7 @@ def main():
         metrics,
     )
     print(f"Saved ALR Stage2 difficulty estimator to {args.output_dir}")
+    cleanup_distributed(env)
 
 
 if __name__ == "__main__":

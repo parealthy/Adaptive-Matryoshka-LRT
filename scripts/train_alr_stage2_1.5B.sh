@@ -21,10 +21,13 @@ WEIGHT_DECAY="${WEIGHT_DECAY:-1e-4}"
 MAX_GRAD_NORM="${MAX_GRAD_NORM:-1.0}"
 MLP_HIDDEN_SIZE="${MLP_HIDDEN_SIZE:-1024}"
 DROPOUT="${DROPOUT:-0.1}"
-DEVICE="${DEVICE:-cuda:0}"
+DEVICE="${DEVICE:-auto}"
 HEAD_DEVICE="${HEAD_DEVICE:-cuda}"
 TORCH_DTYPE="${TORCH_DTYPE:-bf16}"
 OVERWRITE_CACHE="${OVERWRITE_CACHE:-false}"
+ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-configs/multi_gpu.yaml}"
+NUM_GPUS="${NUM_GPUS:-8}"
+MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT:-23467}"
 
 EXTRA_ARGS=()
 if [ -n "$LATENT_TRAJECTORY_LENGTHS" ]; then
@@ -43,9 +46,18 @@ echo "  Model:  $SLOW_THINKING_MODEL_PATH"
 echo "  Stage1: $STAGE1_CHECKPOINT_PATH"
 echo "  Output: $OUTPUT_DIR"
 echo "  Cache:  $CACHE_DIR"
+echo "  GPUs:   $NUM_GPUS"
 echo "================================================"
 
-python stage2_train.py \
+mkdir -p "$OUTPUT_DIR" "$CACHE_DIR"
+
+accelerate launch \
+    --config_file "$ACCELERATE_CONFIG" \
+    --num_processes "$NUM_GPUS" \
+    --num_machines 1 \
+    --machine_rank 0 \
+    --main_process_port "$MAIN_PROCESS_PORT" \
+    stage2_train.py \
     --model_path "$SLOW_THINKING_MODEL_PATH" \
     --stage1_checkpoint_path "$STAGE1_CHECKPOINT_PATH" \
     --output_dir "$OUTPUT_DIR" \
@@ -66,4 +78,5 @@ python stage2_train.py \
     --device "$DEVICE" \
     --head_device "$HEAD_DEVICE" \
     --torch_dtype "$TORCH_DTYPE" \
-    "${EXTRA_ARGS[@]}"
+    "${EXTRA_ARGS[@]}" \
+    2>&1 | tee -a "$OUTPUT_DIR/train-stage2-$(date +%Y%m%d-%H%M%S).log"
