@@ -28,6 +28,8 @@ OVERWRITE_CACHE="${OVERWRITE_CACHE:-false}"
 ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-configs/multi_gpu.yaml}"
 NUM_GPUS="${NUM_GPUS:-8}"
 MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT:-23467}"
+STAGE2_DIST_BACKEND="${STAGE2_DIST_BACKEND:-gloo}"
+export STAGE2_DIST_BACKEND
 
 EXTRA_ARGS=()
 if [ -n "$LATENT_TRAJECTORY_LENGTHS" ]; then
@@ -47,6 +49,7 @@ echo "  Stage1: $STAGE1_CHECKPOINT_PATH"
 echo "  Output: $OUTPUT_DIR"
 echo "  Cache:  $CACHE_DIR"
 echo "  GPUs:   $NUM_GPUS"
+echo "  Sync:   $STAGE2_DIST_BACKEND"
 echo "================================================"
 
 mkdir -p "$OUTPUT_DIR" "$CACHE_DIR"

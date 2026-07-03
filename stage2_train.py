@@ -104,7 +104,10 @@ def setup_distributed(env: DistributedEnv) -> None:
     if torch.cuda.is_available():
         torch.cuda.set_device(env.local_rank)
     if dist.is_available() and not dist.is_initialized():
-        backend = "nccl" if torch.cuda.is_available() else "gloo"
+        # Stage 2 uses distributed workers only to shard feature extraction and
+        # synchronize files. It does not need GPU collectives, so gloo avoids
+        # NCCL shared-memory failures on clusters with constrained /dev/shm.
+        backend = os.environ.get("STAGE2_DIST_BACKEND", "gloo")
         dist.init_process_group(backend=backend, init_method="env://")
 
 
