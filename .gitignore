@@ -17,3 +17,5 @@ runs/
 wandb/
 data/
 trl/.git.release-backup/
+cache/
+eval_outputs/

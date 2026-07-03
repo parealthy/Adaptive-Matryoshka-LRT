@@ -5,7 +5,7 @@ SLOW_THINKING_MODEL_PATH="${SLOW_THINKING_MODEL_PATH:-deepseek-ai/DeepSeek-R1-Di
 REASONING_NET_PATH="${REASONING_NET_PATH:-Qwen/Qwen3-Embedding-0.6B}"
 STAGE1_CHECKPOINT_PATH="${STAGE1_CHECKPOINT_PATH:-checkpoints/ALR-Stage1-DSR1-Qwen-1.5B}"
 DIFFICULTY_CHECKPOINT_PATH="${DIFFICULTY_CHECKPOINT_PATH:-checkpoints/ALR-Stage2-Difficulty-DSR1-Qwen-1.5B}"
-HARNESS_PATH="${HARNESS_PATH:-/Users/focus/Desktop/paper/s1/eval/lm-evaluation-harness}"
+HARNESS_PATH="${HARNESS_PATH:-/mnt/pami23/dzhu/s1/eval/lm-evaluation-harness}"
 LATENT_TRAJECTORY_LENGTHS="${LATENT_TRAJECTORY_LENGTHS:-64,128,192,256}"
 
 OUTPUT_DIR="${OUTPUT_DIR:-eval_outputs/alr_lm_eval_1.5B}"

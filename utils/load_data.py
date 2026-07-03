@@ -88,7 +88,7 @@ def load_train_data(dataset_name: str):
                 dataset,
                 lambda example: {
                     "problem": example["problem"] + MATH_SUFFIX,
-                    "solution": example["answer"],
+                    "solution": example["solution"],
                 },
             )
 
