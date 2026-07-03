@@ -12,6 +12,7 @@ from glob import glob
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Optional
+from dataclasses import dataclass
 
 import torch
 from safetensors import safe_open
@@ -31,6 +32,59 @@ DEFAULT_PROMPT_TEMPLATE = (
     "{problem} Let's think step by step and output the final answer within \\boxed{}."
 )
 BUILTIN_TASKS = {"math500", "gsm8k"}
+
+
+@dataclass(frozen=True)
+class DistributedEnv:
+    rank: int
+    local_rank: int
+    world_size: int
+
+    @property
+    def is_distributed(self) -> bool:
+        return self.world_size > 1
+
+    @property
+    def is_main_process(self) -> bool:
+        return self.rank == 0
+
+
+def get_distributed_env() -> DistributedEnv:
+    return DistributedEnv(
+        rank=int(os.environ.get("RANK", "0")),
+        local_rank=int(os.environ.get("LOCAL_RANK", "0")),
+        world_size=int(os.environ.get("WORLD_SIZE", "1")),
+    )
+
+
+def setup_distributed(env: DistributedEnv) -> None:
+    if not env.is_distributed:
+        return
+    import torch.distributed as dist
+
+    if torch.cuda.is_available():
+        torch.cuda.set_device(env.local_rank)
+    if dist.is_available() and not dist.is_initialized():
+        backend = os.environ.get("ALR_EVAL_DIST_BACKEND", "gloo")
+        dist.init_process_group(backend=backend, init_method="env://")
+
+
+def distributed_barrier(env: DistributedEnv) -> None:
+    if not env.is_distributed:
+        return
+    import torch.distributed as dist
+
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier()
+
+
+def cleanup_distributed(env: DistributedEnv) -> None:
+    if not env.is_distributed:
+        return
+    import torch.distributed as dist
+
+    if dist.is_available() and dist.is_initialized():
+        dist.destroy_process_group()
 
 
 def progress(iterable, desc=None):
@@ -82,10 +136,16 @@ def resolve_hidden_size(config) -> int:
     raise ValueError("Failed to resolve hidden_size from the base model config.")
 
 
-def resolve_device_map(device: str):
+def resolve_device_map(device: str, env: Optional[DistributedEnv] = None):
     if device == "auto":
-        return "auto"
+        if not torch.cuda.is_available():
+            return {"": "cpu"}
+        if env is not None and env.is_distributed:
+            return {"": env.local_rank}
+        return {"": 0}
     if device == "cuda":
+        if env is not None and env.is_distributed:
+            return {"": env.local_rank}
         return {"": 0}
     if device.startswith("cuda:"):
         return {"": int(device.split(":", 1)[1])}
@@ -196,7 +256,13 @@ def sanitize_name(value: str) -> str:
 
 
 class ALRBatchGenerator:
-    def __init__(self, args, latent_trajectory_lengths: list[int], needs_adaptive: bool):
+    def __init__(
+        self,
+        args,
+        latent_trajectory_lengths: list[int],
+        needs_adaptive: bool,
+        env: Optional[DistributedEnv] = None,
+    ):
         self.args = args
         self.latent_trajectory_lengths = latent_trajectory_lengths
         self.rng = random.Random(args.seed)
@@ -214,7 +280,7 @@ class ALRBatchGenerator:
         self.model = AutoModelForCausalLM.from_pretrained(
             args.model_path,
             torch_dtype=dtype_from_arg(args.torch_dtype),
-            device_map=resolve_device_map(args.device),
+            device_map=resolve_device_map(args.device, env),
             trust_remote_code=not args.no_trust_remote_code,
             low_cpu_mem_usage=True,
         )
@@ -571,16 +637,30 @@ def save_json(path: Path, payload: Any) -> None:
         handle.write("\n")
 
 
-def evaluate_task(generator: ALRBatchGenerator, records: list[dict[str, Any]], task_name: str, method: str, args):
+def evaluate_task(
+    generator: ALRBatchGenerator,
+    records: list[dict[str, Any]],
+    task_name: str,
+    method: str,
+    args,
+    record_indices: Optional[list[int]] = None,
+):
     if args.limit is not None:
         records = records[: args.limit]
+        if record_indices is not None:
+            record_indices = record_indices[: args.limit]
     if not records:
-        raise ValueError(f"No records to evaluate for task {task_name}.")
+        return [], summarize_rows([], task_name, method, generator.latent_trajectory_lengths)
+    if record_indices is None:
+        record_indices = list(range(len(records)))
+    if len(record_indices) != len(records):
+        raise ValueError("record_indices and records must have the same length.")
 
     result_rows = []
     started = perf_counter()
     for start in progress(range(0, len(records), args.batch_size), desc=f"{method}/{task_name}"):
         batch = records[start : start + args.batch_size]
+        batch_indices = record_indices[start : start + args.batch_size]
         prompts = [
             args.prompt_template.format(problem=record["problem"])
             for record in batch
@@ -594,7 +674,7 @@ def evaluate_task(generator: ALRBatchGenerator, records: list[dict[str, Any]], t
             )
             latent_length = int(generation["latent_lengths"][offset])
             row = {
-                "index": start + offset,
+                "index": int(batch_indices[offset]),
                 "task": task_name,
                 "method": method,
                 "problem": record["problem"],
@@ -615,13 +695,43 @@ def evaluate_task(generator: ALRBatchGenerator, records: list[dict[str, Any]], t
             result_rows.append(row)
 
     elapsed = perf_counter() - started
+    summary = summarize_rows(
+        result_rows,
+        task_name,
+        method,
+        generator.latent_trajectory_lengths,
+        elapsed_seconds=elapsed,
+    )
+    return result_rows, summary
+
+
+def summarize_rows(
+    result_rows: list[dict[str, Any]],
+    task_name: str,
+    method: str,
+    latent_trajectory_lengths: list[int],
+    elapsed_seconds: Optional[float] = None,
+):
     total = len(result_rows)
+    if total == 0:
+        return {
+            "task": task_name,
+            "method": method,
+            "total": 0,
+            "correct": 0,
+            "accuracy": 0.0,
+            "avg_latent_length": 0.0,
+            "latent_cost_saving_vs_fixed_max": 0.0,
+            "avg_output_tokens": 0.0,
+            "latent_length_distribution": {},
+            "elapsed_seconds": elapsed_seconds,
+        }
     correct_count = sum(1 for row in result_rows if row["correct"])
     avg_latent_length = sum(row["latent_length"] for row in result_rows) / total
     avg_output_tokens = sum(row["output_tokens"] for row in result_rows) / total
-    max_length = max(generator.latent_trajectory_lengths)
+    max_length = max(latent_trajectory_lengths)
     latent_distribution = Counter(str(row["latent_length"]) for row in result_rows)
-    summary = {
+    return {
         "task": task_name,
         "method": method,
         "total": total,
@@ -631,9 +741,32 @@ def evaluate_task(generator: ALRBatchGenerator, records: list[dict[str, Any]], t
         "latent_cost_saving_vs_fixed_max": 1.0 - (avg_latent_length / max_length),
         "avg_output_tokens": avg_output_tokens,
         "latent_length_distribution": dict(sorted(latent_distribution.items())),
-        "elapsed_seconds": elapsed,
+        "elapsed_seconds": elapsed_seconds,
     }
-    return result_rows, summary
+
+
+def select_rank_records(records: list[dict[str, Any]], env: DistributedEnv):
+    indexed = list(enumerate(records))
+    selected = indexed[env.rank :: env.world_size]
+    return [index for index, _record in selected], [record for _index, record in selected]
+
+
+def shard_dir_for(output_dir: Path, method: str, task_name: str, world_size: int) -> Path:
+    return output_dir / f"{sanitize_name(method)}_{sanitize_name(task_name)}_shards_world{world_size}"
+
+
+def merge_result_shards(shard_paths: list[Path]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for path in shard_paths:
+        if not path.exists():
+            raise FileNotFoundError(f"Missing result shard: {path}")
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        if not isinstance(payload, list):
+            raise ValueError(f"Result shard must contain a JSON list: {path}")
+        rows.extend(payload)
+    rows.sort(key=lambda row: int(row["index"]))
+    return rows
 
 
 def parse_args():
@@ -669,7 +802,14 @@ def parse_args():
     parser.add_argument("--prompt_max_length", type=int, default=1024)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top_p", type=float, default=0.95)
-    parser.add_argument("--device", default="cuda:0")
+    parser.add_argument(
+        "--device",
+        default="auto",
+        help=(
+            "Device for generation. Use 'auto' with accelerate single-node "
+            "multi-GPU launch so each rank uses its LOCAL_RANK GPU."
+        ),
+    )
     parser.add_argument("--torch_dtype", default="bf16")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--overwrite", action="store_true")
@@ -680,6 +820,14 @@ def parse_args():
 
 def main():
     args = parse_args()
+    env = get_distributed_env()
+    setup_distributed(env)
+    if env.is_distributed:
+        print(
+            f"distributed_eval: rank={env.rank} local_rank={env.local_rank} "
+            f"world_size={env.world_size}",
+            flush=True,
+        )
     if args.batch_size <= 0:
         raise ValueError("--batch_size must be positive.")
 
@@ -687,14 +835,18 @@ def main():
     parsed_methods = [parse_method(method) for method in methods]
     needs_adaptive = any(kind == "adaptive" for kind, _ in parsed_methods)
     latent_trajectory_lengths = resolve_latent_trajectory_lengths(args)
-    print(f"latent_trajectory_lengths={latent_trajectory_lengths}")
+    if env.is_main_process:
+        print(f"latent_trajectory_lengths={latent_trajectory_lengths}")
 
     output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if env.is_main_process:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    distributed_barrier(env)
     generator = ALRBatchGenerator(
         args,
         latent_trajectory_lengths=latent_trajectory_lengths,
         needs_adaptive=needs_adaptive,
+        env=env,
     )
 
     summary = {
@@ -714,62 +866,90 @@ def main():
     }
 
     for task_name in args.tasks:
-        print(f"\nLoading task: {task_name}")
+        if env.is_main_process:
+            print(f"\nLoading task: {task_name}")
         records = load_task(args, task_name)
         if args.limit is not None:
-            print(f"Using first {min(args.limit, len(records))} examples for {task_name}")
+            records = records[: args.limit]
+            if env.is_main_process:
+                print(f"Using first {len(records)} examples for {task_name}")
 
         for method in methods:
             result_path = output_dir / f"{sanitize_name(method)}_{sanitize_name(task_name)}_results.json"
             if result_path.exists() and not args.overwrite:
-                print(f"Skipping existing result file: {result_path}")
-                with result_path.open("r", encoding="utf-8") as handle:
-                    rows = json.load(handle)
-                total = len(rows)
-                correct_count = sum(1 for row in rows if row.get("correct"))
-                avg_latent_length = sum(int(row["latent_length"]) for row in rows) / max(total, 1)
-                avg_output_tokens = sum(int(row.get("output_tokens", 0)) for row in rows) / max(total, 1)
-                method_summary = {
-                    "task": task_name,
-                    "method": method,
-                    "total": total,
-                    "correct": correct_count,
-                    "accuracy": correct_count / max(total, 1),
-                    "avg_latent_length": avg_latent_length,
-                    "latent_cost_saving_vs_fixed_max": 1.0 - (avg_latent_length / max(latent_trajectory_lengths)),
-                    "avg_output_tokens": avg_output_tokens,
-                    "latent_length_distribution": dict(
-                        sorted(Counter(str(row["latent_length"]) for row in rows).items())
-                    ),
-                    "elapsed_seconds": None,
-                }
+                if env.is_main_process:
+                    print(f"Skipping existing result file: {result_path}")
+                    with result_path.open("r", encoding="utf-8") as handle:
+                        rows = json.load(handle)
+                    method_summary = summarize_rows(
+                        rows,
+                        task_name,
+                        method,
+                        latent_trajectory_lengths,
+                        elapsed_seconds=None,
+                    )
+                distributed_barrier(env)
             else:
-                rows, method_summary = evaluate_task(
+                rank_indices, rank_records = select_rank_records(records, env)
+                rows, _rank_summary = evaluate_task(
                     generator,
-                    records,
+                    rank_records,
                     task_name,
                     method,
                     args,
+                    record_indices=rank_indices,
                 )
-                save_json(result_path, rows)
-                print(f"Saved {len(rows)} rows to {result_path}")
+                if env.is_distributed:
+                    shard_dir = shard_dir_for(output_dir, method, task_name, env.world_size)
+                    shard_dir.mkdir(parents=True, exist_ok=True)
+                    shard_path = shard_dir / f"rank{env.rank:05d}.json"
+                    save_json(shard_path, rows)
+                    print(f"rank={env.rank} saved {len(rows)} rows to {shard_path}", flush=True)
+                    distributed_barrier(env)
+                    if env.is_main_process:
+                        shard_paths = [
+                            shard_dir / f"rank{rank:05d}.json"
+                            for rank in range(env.world_size)
+                        ]
+                        merged_rows = merge_result_shards(shard_paths)
+                        method_summary = summarize_rows(
+                            merged_rows,
+                            task_name,
+                            method,
+                            latent_trajectory_lengths,
+                        )
+                        save_json(result_path, merged_rows)
+                        print(f"Saved {len(merged_rows)} merged rows to {result_path}")
+                    distributed_barrier(env)
+                else:
+                    method_summary = summarize_rows(
+                        rows,
+                        task_name,
+                        method,
+                        latent_trajectory_lengths,
+                    )
+                    save_json(result_path, rows)
+                    print(f"Saved {len(rows)} rows to {result_path}")
 
-            method_summary["output_path"] = str(result_path)
-            summary["results"].setdefault(method, {})[task_name] = method_summary
-            print(
-                "{method}/{task}: acc={acc:.4f} avg_latent={latent:.2f} "
-                "saving={saving:.2%}".format(
-                    method=method,
-                    task=task_name,
-                    acc=method_summary["accuracy"],
-                    latent=method_summary["avg_latent_length"],
-                    saving=method_summary["latent_cost_saving_vs_fixed_max"],
+            if env.is_main_process:
+                method_summary["output_path"] = str(result_path)
+                summary["results"].setdefault(method, {})[task_name] = method_summary
+                print(
+                    "{method}/{task}: acc={acc:.4f} avg_latent={latent:.2f} "
+                    "saving={saving:.2%}".format(
+                        method=method,
+                        task=task_name,
+                        acc=method_summary["accuracy"],
+                        latent=method_summary["avg_latent_length"],
+                        saving=method_summary["latent_cost_saving_vs_fixed_max"],
+                    )
                 )
-            )
 
-    summary_path = output_dir / "summary.json"
-    save_json(summary_path, summary)
-    print(f"\nSaved summary to {summary_path}")
+    if env.is_main_process:
+        summary_path = output_dir / "summary.json"
+        save_json(summary_path, summary)
+        print(f"\nSaved summary to {summary_path}")
+    cleanup_distributed(env)
 
 
 if __name__ == "__main__":

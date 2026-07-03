@@ -16,10 +16,15 @@ MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-2048}"
 PROMPT_MAX_LENGTH="${PROMPT_MAX_LENGTH:-1024}"
 TEMPERATURE="${TEMPERATURE:-0.0}"
 TOP_P="${TOP_P:-0.95}"
-DEVICE="${DEVICE:-cuda:0}"
+DEVICE="${DEVICE:-auto}"
 TORCH_DTYPE="${TORCH_DTYPE:-bf16}"
 SEED="${SEED:-42}"
 OVERWRITE="${OVERWRITE:-true}"
+ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-configs/multi_gpu.yaml}"
+NUM_GPUS="${NUM_GPUS:-8}"
+MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT:-23468}"
+ALR_EVAL_DIST_BACKEND="${ALR_EVAL_DIST_BACKEND:-gloo}"
+export ALR_EVAL_DIST_BACKEND
 
 read -r -a TASK_ARGS <<< "$TASKS"
 read -r -a METHOD_ARGS <<< "$METHODS"
@@ -39,9 +44,19 @@ echo "  Stage2: $DIFFICULTY_CHECKPOINT_PATH"
 echo "  Tasks:  $TASKS"
 echo "  Methods:$METHODS"
 echo "  Output: $OUTPUT_DIR"
+echo "  GPUs:   $NUM_GPUS"
+echo "  Sync:   $ALR_EVAL_DIST_BACKEND"
 echo "================================================"
 
-python evaluation/alr_math_eval.py \
+mkdir -p "$OUTPUT_DIR"
+
+accelerate launch \
+    --config_file "$ACCELERATE_CONFIG" \
+    --num_processes "$NUM_GPUS" \
+    --num_machines 1 \
+    --machine_rank 0 \
+    --main_process_port "$MAIN_PROCESS_PORT" \
+    evaluation/alr_math_eval.py \
     --model_path "$SLOW_THINKING_MODEL_PATH" \
     --reasoning_net_path "$REASONING_NET_PATH" \
     --stage1_checkpoint_path "$STAGE1_CHECKPOINT_PATH" \
@@ -58,4 +73,5 @@ python evaluation/alr_math_eval.py \
     --device "$DEVICE" \
     --torch_dtype "$TORCH_DTYPE" \
     --seed "$SEED" \
-    "${EXTRA_ARGS[@]}"
+    "${EXTRA_ARGS[@]}" \
+    2>&1 | tee -a "$OUTPUT_DIR/eval-$(date +%Y%m%d-%H%M%S).log"
