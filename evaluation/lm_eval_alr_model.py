@@ -194,11 +194,23 @@ class _TorchDistributedAccelerator:
             return tensor
         import torch.distributed as dist
 
-        gathered = [torch.empty_like(tensor) for _ in range(self.num_processes)]
-        dist.all_gather(gathered, tensor)
+        gather_tensor = tensor
+        if dist.get_backend() == "gloo" and tensor.is_cuda:
+            gather_tensor = tensor.detach().cpu()
+
+        gathered = [torch.empty_like(gather_tensor) for _ in range(self.num_processes)]
+        dist.all_gather(gathered, gather_tensor)
         if tensor.dim() == 0:
             return torch.stack(gathered)
         return torch.cat(gathered, dim=0)
+
+    def wait_for_everyone(self) -> None:
+        if self.num_processes <= 1:
+            return
+        import torch.distributed as dist
+
+        if dist.is_available() and dist.is_initialized():
+            dist.barrier()
 
 
 def _resolve_device_map(device: str, local_rank: int, world_size: int):
