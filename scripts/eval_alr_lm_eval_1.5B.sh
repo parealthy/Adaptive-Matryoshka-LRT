@@ -19,9 +19,10 @@ METHODS="${METHODS:-fixed-64 fixed-128 fixed-192 fixed-256 random adaptive}"
 BATCH_SIZE="${BATCH_SIZE:-1}"
 LIMIT="${LIMIT:-}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-2048}"
-PROMPT_MAX_LENGTH="${PROMPT_MAX_LENGTH:-1024}"
+PROMPT_MAX_LENGTH="${PROMPT_MAX_LENGTH:-2048}"
 TEMPERATURE="${TEMPERATURE:-0.0}"
 TOP_P="${TOP_P:-0.95}"
+NUM_FEWSHOT="${NUM_FEWSHOT:-0}"
 DEVICE="${DEVICE:-auto}"
 TORCH_DTYPE="${TORCH_DTYPE:-bf16}"
 SEED="${SEED:-42}"
@@ -76,6 +77,7 @@ fi
 if [ "$APPLY_CHAT_TEMPLATE" = "true" ]; then
     EXTRA_ARGS+=(--apply_chat_template)
 fi
+EXTRA_ARGS+=(--num_fewshot "$NUM_FEWSHOT")
 
 echo "================================================"
 echo "  ALR lm-evaluation-harness Evaluation"
@@ -84,6 +86,7 @@ echo "  Stage1:  $STAGE1_CHECKPOINT_PATH"
 echo "  Stage2:  $DIFFICULTY_CHECKPOINT_PATH"
 echo "  Tasks:   $TASKS"
 echo "  Methods: $METHODS"
+echo "  Fewshot: $NUM_FEWSHOT"
 echo "  Output:  $OUTPUT_DIR"
 echo "  GPUs:    $NUM_GPUS"
 echo "================================================"

@@ -427,6 +427,7 @@ class ALRLM(LM):
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.tokenizer.padding_side = "left"
+        self.tokenizer.truncation_side = "left"
 
         self.model = AutoModelForCausalLM.from_pretrained(
             model_path,

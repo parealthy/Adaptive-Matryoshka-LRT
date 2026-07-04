@@ -209,12 +209,18 @@ def run_one(evaluator, TaskManager, args, method: str, task: str) -> Optional[di
         "trace_path": str(trace_path),
         "trace_task": task,
     }
-    gen_kwargs = (
-        f"temperature={args.temperature},"
-        f"do_sample={'true' if args.temperature > 0 else 'false'},"
-        f"top_p={args.top_p},"
-        f"max_gen_toks={args.max_new_tokens}"
-    )
+    gen_kwargs_items = [
+        f"do_sample={'true' if args.temperature > 0 else 'false'}",
+        f"max_gen_toks={args.max_new_tokens}",
+    ]
+    if args.temperature > 0:
+        gen_kwargs_items.extend(
+            [
+                f"temperature={args.temperature}",
+                f"top_p={args.top_p}",
+            ]
+        )
+    gen_kwargs = ",".join(gen_kwargs_items)
 
     results = evaluator.simple_evaluate(
         model="alr",
@@ -281,13 +287,13 @@ def parse_args():
     parser.add_argument("--batch_size", default="1")
     parser.add_argument("--limit", type=parse_limit, default=None)
     parser.add_argument("--max_new_tokens", type=int, default=2048)
-    parser.add_argument("--prompt_max_length", type=int, default=1024)
+    parser.add_argument("--prompt_max_length", type=int, default=2048)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top_p", type=float, default=0.95)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--torch_dtype", default="bf16")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--num_fewshot", type=int, default=None)
+    parser.add_argument("--num_fewshot", type=int, default=0)
     parser.add_argument("--verbosity", default="INFO")
     parser.add_argument("--apply_chat_template", action="store_true")
     parser.add_argument("--no_trust_remote_code", action="store_true")
@@ -311,6 +317,7 @@ def main() -> None:
             "latent_trajectory_lengths": parse_list(args.latent_trajectory_lengths),
             "tasks": args.tasks,
             "methods": args.methods,
+            "num_fewshot": args.num_fewshot,
             "accuracy_source": "lm-evaluation-harness",
         },
         "results": {},
