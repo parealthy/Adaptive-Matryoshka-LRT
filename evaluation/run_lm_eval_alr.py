@@ -208,6 +208,7 @@ def run_one(evaluator, TaskManager, args, method: str, task: str) -> Optional[di
         "seed": args.seed,
         "trace_path": str(trace_path),
         "trace_task": task,
+        "use_training_prompt_template": not args.no_training_prompt_template,
     }
     gen_kwargs_items = [
         f"do_sample={'true' if args.temperature > 0 else 'false'}",
@@ -296,6 +297,7 @@ def parse_args():
     parser.add_argument("--num_fewshot", type=int, default=0)
     parser.add_argument("--verbosity", default="INFO")
     parser.add_argument("--apply_chat_template", action="store_true")
+    parser.add_argument("--no_training_prompt_template", action="store_true")
     parser.add_argument("--no_trust_remote_code", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
@@ -318,6 +320,7 @@ def main() -> None:
             "tasks": args.tasks,
             "methods": args.methods,
             "num_fewshot": args.num_fewshot,
+            "use_training_prompt_template": not args.no_training_prompt_template,
             "accuracy_source": "lm-evaluation-harness",
         },
         "results": {},

@@ -71,6 +71,7 @@ from lm_eval.api.registry import register_model
 
 
 DEFAULT_LATENT_TRAJECTORY_LENGTHS = [64, 128, 192, 256]
+MATH_SUFFIX = " Let's think step by step and output the final answer within \\boxed{}."
 
 
 def _as_bool(value) -> bool:
@@ -343,6 +344,13 @@ def _sha1_text(value: str) -> str:
     return hashlib.sha1(value.encode("utf-8")).hexdigest()
 
 
+def _append_math_suffix(problem: str) -> str:
+    problem = str(problem).strip()
+    if not problem.endswith(MATH_SUFFIX):
+        problem = problem + MATH_SUFFIX
+    return problem
+
+
 @register_model("alr")
 class ALRLM(LM):
     """ALR length-elastic generation backend for lm-evaluation-harness."""
@@ -366,6 +374,7 @@ class ALRLM(LM):
         seed: int = 42,
         trace_path: Optional[str] = None,
         trace_task: Optional[str] = None,
+        use_training_prompt_template=True,
         **_kwargs,
     ) -> None:
         super().__init__()
@@ -408,6 +417,8 @@ class ALRLM(LM):
         self.rng = random.Random(self.seed + self.rank)
         self.trust_remote_code = _as_bool(trust_remote_code)
         self.trace_task = trace_task
+        self.use_training_prompt_template = _as_bool(use_training_prompt_template)
+        self._prompt_fallback_warning_printed = False
         self._trace_counter = 0
         self._trace_handle = self._open_trace(trace_path)
 
@@ -524,8 +535,14 @@ class ALRLM(LM):
         for group in grouped.values():
             for batch in _chunks(group, self.batch_size):
                 contexts = [item[2] for item in batch]
+                prompt_infos = [
+                    self._render_prompt_for_request(request=item[1], context=item[2])
+                    for item in batch
+                ]
+                rendered_prompts = [prompt for prompt, _metadata in prompt_infos]
+                prompt_metadata = [metadata for _prompt, metadata in prompt_infos]
                 gen_kwargs = dict(batch[0][3])
-                batch_result = self._generate_batch(contexts, gen_kwargs)
+                batch_result = self._generate_batch(rendered_prompts, gen_kwargs)
                 outputs = batch_result["completions"]
                 for local_index, ((original_index, request, context, original_kwargs), output) in enumerate(
                     zip(batch, outputs)
@@ -539,6 +556,8 @@ class ALRLM(LM):
                     self._write_trace(
                         request=request,
                         context=context,
+                        rendered_prompt=rendered_prompts[local_index],
+                        prompt_metadata=prompt_metadata[local_index],
                         completion=output,
                         latent_length=batch_result["latent_lengths"][local_index],
                         predicted_label=batch_result["predicted_labels"][local_index],
@@ -551,6 +570,56 @@ class ALRLM(LM):
         if self._trace_handle is not None:
             self._trace_handle.flush()
         return [result if result is not None else "" for result in results]
+
+    def _extract_problem_from_request(self, request, context: str) -> Optional[str]:
+        doc = getattr(request, "doc", None)
+        if isinstance(doc, dict):
+            for field_name in ("problem", "question"):
+                value = doc.get(field_name)
+                if value:
+                    return str(value).strip()
+
+        context = str(context)
+        problem_matches = re.findall(
+            r"Problem:\s*(.*?)(?:\n\s*\n\s*Solution:|\n\s*Answer:)",
+            context,
+            re.S,
+        )
+        if problem_matches:
+            return problem_matches[-1].strip()
+
+        question_matches = re.findall(r"Question:\s*(.*?)(?:\n\s*Answer:)", context, re.S)
+        if question_matches:
+            return question_matches[-1].strip()
+        return None
+
+    def _render_training_prompt(self, problem: str) -> str:
+        return self.tokenizer.apply_chat_template(
+            [{"role": "user", "content": _append_math_suffix(problem)}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
+    def _render_prompt_for_request(self, request, context: str) -> tuple[str, dict[str, str]]:
+        if not self.use_training_prompt_template:
+            return context, {"prompt_template": "harness_context"}
+
+        problem = self._extract_problem_from_request(request, context)
+        if problem is None:
+            if self.rank == 0 and not self._prompt_fallback_warning_printed:
+                print(
+                    "Warning: failed to recover the raw problem from lm-eval request; "
+                    "falling back to the harness context for this and similar samples.",
+                    flush=True,
+                )
+                self._prompt_fallback_warning_printed = True
+            return context, {"prompt_template": "harness_context_fallback"}
+
+        rendered_prompt = self._render_training_prompt(problem)
+        return rendered_prompt, {
+            "prompt_template": "training_chat_math_suffix",
+            "problem_sha1": _sha1_text(_append_math_suffix(problem)),
+        }
 
     def _open_trace(self, trace_path: Optional[str]):
         if not trace_path:
@@ -571,6 +640,8 @@ class ALRLM(LM):
         self,
         request,
         context: str,
+        rendered_prompt: str,
+        prompt_metadata: dict[str, str],
         completion: str,
         latent_length: int,
         predicted_label: Optional[int],
@@ -594,8 +665,10 @@ class ALRLM(LM):
             "latent_length": int(latent_length),
             "output_tokens": int(output_tokens),
             "context_sha1": _sha1_text(context),
+            "rendered_prompt_sha1": _sha1_text(rendered_prompt),
             "completion_sha1": _sha1_text(completion),
         }
+        payload.update(prompt_metadata)
         if length_probabilities is not None:
             payload["length_probabilities"] = length_probabilities
         self._trace_handle.write(json.dumps(payload, ensure_ascii=False) + "\n")

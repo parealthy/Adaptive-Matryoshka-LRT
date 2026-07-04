@@ -30,6 +30,7 @@ NUM_GPUS="${NUM_GPUS:-8}"
 MASTER_PORT="${MASTER_PORT:-29513}"
 OVERWRITE="${OVERWRITE:-true}"
 APPLY_CHAT_TEMPLATE="${APPLY_CHAT_TEMPLATE:-false}"
+USE_TRAINING_PROMPT_TEMPLATE="${USE_TRAINING_PROMPT_TEMPLATE:-true}"
 
 export ALR_LM_EVAL_DIST_BACKEND="${ALR_LM_EVAL_DIST_BACKEND:-gloo}"
 export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-1}"
@@ -77,6 +78,9 @@ fi
 if [ "$APPLY_CHAT_TEMPLATE" = "true" ]; then
     EXTRA_ARGS+=(--apply_chat_template)
 fi
+if [ "$USE_TRAINING_PROMPT_TEMPLATE" != "true" ]; then
+    EXTRA_ARGS+=(--no_training_prompt_template)
+fi
 EXTRA_ARGS+=(--num_fewshot "$NUM_FEWSHOT")
 
 echo "================================================"
@@ -87,6 +91,7 @@ echo "  Stage2:  $DIFFICULTY_CHECKPOINT_PATH"
 echo "  Tasks:   $TASKS"
 echo "  Methods: $METHODS"
 echo "  Fewshot: $NUM_FEWSHOT"
+echo "  Training prompt template: $USE_TRAINING_PROMPT_TEMPLATE"
 echo "  Output:  $OUTPUT_DIR"
 echo "  GPUs:    $NUM_GPUS"
 echo "================================================"
