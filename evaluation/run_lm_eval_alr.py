@@ -50,8 +50,12 @@ def dump_json(path: Path, payload: Any) -> None:
 def patch_transformers_harness_compat() -> None:
     import transformers
 
-    if hasattr(transformers, "AutoModelForVision2Seq"):
+    try:
+        transformers.AutoModelForVision2Seq
         return
+    except AttributeError:
+        pass
+
     fallback = getattr(
         transformers,
         "AutoModelForSeq2SeqLM",
@@ -62,7 +66,13 @@ def patch_transformers_harness_compat() -> None:
             "transformers is missing AutoModelForVision2Seq and no text fallback "
             "AutoModel class is available. Upgrade transformers."
         )
-    transformers.AutoModelForVision2Seq = fallback
+    transformers.__dict__["AutoModelForVision2Seq"] = fallback
+    try:
+        object.__setattr__(transformers, "AutoModelForVision2Seq", fallback)
+    except Exception:
+        pass
+    if hasattr(transformers, "_objects"):
+        transformers._objects["AutoModelForVision2Seq"] = fallback
 
 
 def import_harness(harness_path: Path):

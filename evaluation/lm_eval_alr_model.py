@@ -17,6 +17,37 @@ import torch
 from safetensors import safe_open
 from tqdm import tqdm
 
+
+def _patch_transformers_harness_compat() -> None:
+    import transformers
+
+    try:
+        transformers.AutoModelForVision2Seq
+        return
+    except AttributeError:
+        pass
+
+    fallback = getattr(
+        transformers,
+        "AutoModelForSeq2SeqLM",
+        getattr(transformers, "AutoModelForCausalLM", None),
+    )
+    if fallback is None:
+        raise RuntimeError(
+            "transformers is missing AutoModelForVision2Seq and no text fallback "
+            "AutoModel class is available. Upgrade transformers."
+        )
+    transformers.__dict__["AutoModelForVision2Seq"] = fallback
+    try:
+        object.__setattr__(transformers, "AutoModelForVision2Seq", fallback)
+    except Exception:
+        pass
+    if hasattr(transformers, "_objects"):
+        transformers._objects["AutoModelForVision2Seq"] = fallback
+
+
+_patch_transformers_harness_compat()
+
 from lm_eval.api.model import LM
 from lm_eval.api.registry import register_model
 

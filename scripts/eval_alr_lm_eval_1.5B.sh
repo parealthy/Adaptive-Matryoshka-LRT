@@ -60,6 +60,7 @@ if not hasattr(transformers, "AutoModelForVision2Seq"):
         "Warning: transformers has no AutoModelForVision2Seq; "
         "run_lm_eval_alr.py will apply a text-only compatibility shim."
     )
+    print("If this error still appears, sync evaluation/lm_eval_alr_model.py too.")
 PY
 
 read -r -a TASK_ARGS <<< "$TASKS"
