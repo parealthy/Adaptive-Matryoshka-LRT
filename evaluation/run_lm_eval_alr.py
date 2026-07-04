@@ -56,16 +56,19 @@ def patch_transformers_harness_compat() -> None:
     except AttributeError:
         pass
 
-    fallback = getattr(
-        transformers,
-        "AutoModelForSeq2SeqLM",
-        getattr(transformers, "AutoModelForCausalLM", None),
-    )
+    fallback = None
+    for fallback_name in ("AutoModelForSeq2SeqLM", "AutoModelForCausalLM"):
+        try:
+            fallback = getattr(transformers, fallback_name)
+            break
+        except Exception:
+            continue
     if fallback is None:
         raise RuntimeError(
             "transformers is missing AutoModelForVision2Seq and no text fallback "
             "AutoModel class is available. Upgrade transformers."
         )
+
     transformers.__dict__["AutoModelForVision2Seq"] = fallback
     try:
         object.__setattr__(transformers, "AutoModelForVision2Seq", fallback)
@@ -73,6 +76,21 @@ def patch_transformers_harness_compat() -> None:
         pass
     if hasattr(transformers, "_objects"):
         transformers._objects["AutoModelForVision2Seq"] = fallback
+    try:
+        from transformers.utils.import_utils import _LazyModule
+    except Exception:
+        return
+    if getattr(_LazyModule, "_alr_vision2seq_patch", False):
+        return
+    original_getattr = _LazyModule.__getattr__
+
+    def patched_getattr(self, name):
+        if name == "AutoModelForVision2Seq":
+            return fallback
+        return original_getattr(self, name)
+
+    _LazyModule.__getattr__ = patched_getattr
+    _LazyModule._alr_vision2seq_patch = True
 
 
 def import_harness(harness_path: Path):
