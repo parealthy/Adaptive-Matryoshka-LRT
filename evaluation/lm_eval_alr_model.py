@@ -175,6 +175,32 @@ def _setup_distributed() -> tuple[int, int, int]:
     return rank, local_rank, world_size
 
 
+class _TorchDistributedAccelerator:
+    def __init__(self, rank: int, local_rank: int, world_size: int):
+        self.local_process_index = rank
+        self.process_index = rank
+        self.num_processes = world_size
+        if torch.cuda.is_available():
+            self.device = torch.device(f"cuda:{local_rank}")
+        else:
+            self.device = torch.device("cpu")
+
+    @property
+    def is_local_main_process(self) -> bool:
+        return self.local_process_index == 0
+
+    def gather(self, tensor: torch.Tensor) -> torch.Tensor:
+        if self.num_processes <= 1:
+            return tensor
+        import torch.distributed as dist
+
+        gathered = [torch.empty_like(tensor) for _ in range(self.num_processes)]
+        dist.all_gather(gathered, tensor)
+        if tensor.dim() == 0:
+            return torch.stack(gathered)
+        return torch.cat(gathered, dim=0)
+
+
 def _resolve_device_map(device: str, local_rank: int, world_size: int):
     if device == "auto":
         if not torch.cuda.is_available():
@@ -338,6 +364,7 @@ class ALRLM(LM):
         self._rank = rank
         self._world_size = world_size
         self.local_rank = local_rank
+        self.accelerator = _TorchDistributedAccelerator(rank, local_rank, world_size)
 
         lrt_root_path = Path(lrt_root).expanduser().resolve()
         if not lrt_root_path.exists():
@@ -398,6 +425,7 @@ class ALRLM(LM):
         )
         self.model.eval()
         self.input_device = _model_input_device(self.model)
+        self._device = self.input_device
 
         self.reasoning_network = LengthElasticTransformerReasoningNet(
             reasoning_net_path,
@@ -434,6 +462,10 @@ class ALRLM(LM):
     @property
     def tokenizer_name(self) -> str:
         return self.model_path
+
+    @property
+    def device(self) -> torch.device:
+        return getattr(self, "_device", self.accelerator.device)
 
     def chat_template(self, chat_template=False) -> str:
         if not chat_template:
