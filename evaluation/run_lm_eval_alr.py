@@ -186,6 +186,17 @@ def run_one(evaluator, TaskManager, args, method: str, task: str) -> Optional[di
     harness_output_dir = Path(args.output_dir) / "harness" / method / task
     trace_dir = Path(args.output_dir) / "traces" / method
     trace_path = trace_dir / f"{task}_rank{{rank:05d}}.jsonl"
+    result_path = harness_output_dir / "results.json"
+
+    if not args.overwrite and result_path.exists():
+        if is_main_process():
+            print(
+                f"Skipping existing lm-eval result: task={task} method={method} "
+                f"({result_path})",
+                flush=True,
+            )
+        with result_path.open("r", encoding="utf-8") as handle:
+            return json.load(handle)
 
     if is_main_process() and args.overwrite:
         if harness_output_dir.exists():
@@ -198,6 +209,7 @@ def run_one(evaluator, TaskManager, args, method: str, task: str) -> Optional[di
         "reasoning_net_path": args.reasoning_net_path,
         "stage1_checkpoint_path": args.stage1_checkpoint_path,
         "difficulty_checkpoint_path": args.difficulty_checkpoint_path,
+        "tokenizer_path": args.tokenizer_path,
         "latent_trajectory_lengths": args.latent_trajectory_lengths,
         "method": method,
         "prompt_max_length": args.prompt_max_length,
@@ -209,6 +221,8 @@ def run_one(evaluator, TaskManager, args, method: str, task: str) -> Optional[di
         "trace_path": str(trace_path),
         "trace_task": task,
         "use_training_prompt_template": not args.no_training_prompt_template,
+        "local_files_only": args.local_files_only,
+        "use_fast_tokenizer": not args.use_slow_tokenizer,
     }
     gen_kwargs_items = [
         f"do_sample={'true' if args.temperature > 0 else 'false'}",
@@ -268,6 +282,7 @@ def parse_args():
     parser.add_argument("--harness_path", default=str(DEFAULT_HARNESS_PATH))
     parser.add_argument("--model_path", default="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
     parser.add_argument("--reasoning_net_path", default="Qwen/Qwen3-Embedding-0.6B")
+    parser.add_argument("--tokenizer_path", default=None)
     parser.add_argument(
         "--stage1_checkpoint_path",
         default="checkpoints/ALR-Stage1-DSR1-Qwen-1.5B",
@@ -298,6 +313,8 @@ def parse_args():
     parser.add_argument("--verbosity", default="INFO")
     parser.add_argument("--apply_chat_template", action="store_true")
     parser.add_argument("--no_training_prompt_template", action="store_true")
+    parser.add_argument("--local_files_only", action="store_true")
+    parser.add_argument("--use_slow_tokenizer", action="store_true")
     parser.add_argument("--no_trust_remote_code", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
@@ -314,6 +331,7 @@ def main() -> None:
             "harness_path": str(harness_path.expanduser().resolve()),
             "model_path": args.model_path,
             "reasoning_net_path": args.reasoning_net_path,
+            "tokenizer_path": args.tokenizer_path,
             "stage1_checkpoint_path": args.stage1_checkpoint_path,
             "difficulty_checkpoint_path": args.difficulty_checkpoint_path,
             "latent_trajectory_lengths": parse_list(args.latent_trajectory_lengths),
@@ -321,6 +339,8 @@ def main() -> None:
             "methods": args.methods,
             "num_fewshot": args.num_fewshot,
             "use_training_prompt_template": not args.no_training_prompt_template,
+            "local_files_only": args.local_files_only,
+            "use_fast_tokenizer": not args.use_slow_tokenizer,
             "accuracy_source": "lm-evaluation-harness",
         },
         "results": {},

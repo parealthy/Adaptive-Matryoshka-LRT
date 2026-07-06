@@ -35,7 +35,13 @@ class LengthElasticReasoningNetBase(torch.nn.Module):
 
 
 class LengthElasticTransformerReasoningNet(LengthElasticReasoningNetBase):
-    def __init__(self, model_name_or_path, latent_trajectory_length=256, hidden_size=1024):
+    def __init__(
+        self,
+        model_name_or_path,
+        latent_trajectory_length=256,
+        hidden_size=1024,
+        local_files_only=False,
+    ):
         super(LengthElasticTransformerReasoningNet, self).__init__(
             latent_trajectory_length,
             hidden_size,
@@ -46,6 +52,7 @@ class LengthElasticTransformerReasoningNet(LengthElasticReasoningNetBase):
             torch_dtype=torch.bfloat16,
             low_cpu_mem_usage=True,
             trust_remote_code=True,
+            local_files_only=local_files_only,
         )
 
         self.reasoning_network.embed_tokens = None

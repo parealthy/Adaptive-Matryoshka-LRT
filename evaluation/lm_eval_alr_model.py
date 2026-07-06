@@ -351,6 +351,34 @@ def _append_math_suffix(problem: str) -> str:
     return problem
 
 
+def _has_tokenizer_files(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    tokenizer_files = {
+        "tokenizer.json",
+        "tokenizer.model",
+        "tokenizer_config.json",
+        "vocab.json",
+        "vocab.txt",
+        "merges.txt",
+    }
+    return any((path / filename).exists() for filename in tokenizer_files)
+
+
+def _resolve_tokenizer_path(
+    model_path: str,
+    stage1_checkpoint_path: str,
+    tokenizer_path: Optional[str],
+) -> str:
+    if tokenizer_path:
+        return tokenizer_path
+
+    stage1_path = Path(stage1_checkpoint_path).expanduser()
+    if _has_tokenizer_files(stage1_path):
+        return str(stage1_path)
+    return model_path
+
+
 @register_model("alr")
 class ALRLM(LM):
     """ALR length-elastic generation backend for lm-evaluation-harness."""
@@ -375,6 +403,9 @@ class ALRLM(LM):
         trace_path: Optional[str] = None,
         trace_task: Optional[str] = None,
         use_training_prompt_template=True,
+        tokenizer_path: Optional[str] = None,
+        local_files_only=False,
+        use_fast_tokenizer=True,
         **_kwargs,
     ) -> None:
         super().__init__()
@@ -418,6 +449,13 @@ class ALRLM(LM):
         self.trust_remote_code = _as_bool(trust_remote_code)
         self.trace_task = trace_task
         self.use_training_prompt_template = _as_bool(use_training_prompt_template)
+        self.local_files_only = _as_bool(local_files_only)
+        self.use_fast_tokenizer = _as_bool(use_fast_tokenizer)
+        self.tokenizer_path = _resolve_tokenizer_path(
+            model_path=model_path,
+            stage1_checkpoint_path=stage1_checkpoint_path,
+            tokenizer_path=tokenizer_path,
+        )
         self._prompt_fallback_warning_printed = False
         self._trace_counter = 0
         self._trace_handle = self._open_trace(trace_path)
@@ -430,11 +468,38 @@ class ALRLM(LM):
         if self.method_kind == "adaptive" and not difficulty_checkpoint_path:
             raise ValueError("method=adaptive requires difficulty_checkpoint_path.")
 
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_path,
-            trust_remote_code=self.trust_remote_code,
-            use_fast=True,
-        )
+        if self.rank == 0:
+            print(
+                f"Loading tokenizer from {self.tokenizer_path} "
+                f"(local_files_only={self.local_files_only}, use_fast={self.use_fast_tokenizer})",
+                flush=True,
+            )
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.tokenizer_path,
+                trust_remote_code=self.trust_remote_code,
+                use_fast=self.use_fast_tokenizer,
+                local_files_only=self.local_files_only,
+            )
+        except Exception as exc:
+            if not self.use_fast_tokenizer:
+                raise RuntimeError(
+                    f"Failed to load tokenizer from {self.tokenizer_path}. "
+                    "Set TOKENIZER_PATH to a local tokenizer directory, usually the "
+                    "Stage1 checkpoint directory."
+                ) from exc
+            if self.rank == 0:
+                print(
+                    "Fast tokenizer loading failed; retrying with use_fast=False. "
+                    f"Original error: {exc}",
+                    flush=True,
+                )
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.tokenizer_path,
+                trust_remote_code=self.trust_remote_code,
+                use_fast=False,
+                local_files_only=self.local_files_only,
+            )
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.tokenizer.padding_side = "left"
@@ -446,6 +511,7 @@ class ALRLM(LM):
             device_map=_resolve_device_map(device, self.local_rank, self.world_size),
             trust_remote_code=self.trust_remote_code,
             low_cpu_mem_usage=True,
+            local_files_only=self.local_files_only,
         )
         self.model.eval()
         self.input_device = _model_input_device(self.model)
@@ -455,6 +521,7 @@ class ALRLM(LM):
             reasoning_net_path,
             latent_trajectory_length=max(self.latent_trajectory_lengths),
             hidden_size=_resolve_hidden_size(self.model.config),
+            local_files_only=self.local_files_only,
         )
         self.reasoning_network.to(self.input_device)
         self.reasoning_network.eval()

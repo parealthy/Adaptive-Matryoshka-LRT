@@ -5,6 +5,7 @@ SLOW_THINKING_MODEL_PATH="${SLOW_THINKING_MODEL_PATH:-deepseek-ai/DeepSeek-R1-Di
 REASONING_NET_PATH="${REASONING_NET_PATH:-Qwen/Qwen3-Embedding-0.6B}"
 STAGE1_CHECKPOINT_PATH="${STAGE1_CHECKPOINT_PATH:-checkpoints/ALR-Stage1-DSR1-Qwen-1.5B}"
 DIFFICULTY_CHECKPOINT_PATH="${DIFFICULTY_CHECKPOINT_PATH:-checkpoints/ALR-Stage2-Difficulty-DSR1-Qwen-1.5B}"
+TOKENIZER_PATH="${TOKENIZER_PATH:-}"
 HARNESS_PATH="${HARNESS_PATH:-/mnt/pami23/dzhu/s1/eval/lm-evaluation-harness}"
 LATENT_TRAJECTORY_LENGTHS="${LATENT_TRAJECTORY_LENGTHS:-64,128,192,256}"
 
@@ -31,6 +32,8 @@ MASTER_PORT="${MASTER_PORT:-29513}"
 OVERWRITE="${OVERWRITE:-true}"
 APPLY_CHAT_TEMPLATE="${APPLY_CHAT_TEMPLATE:-false}"
 USE_TRAINING_PROMPT_TEMPLATE="${USE_TRAINING_PROMPT_TEMPLATE:-true}"
+LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-false}"
+USE_FAST_TOKENIZER="${USE_FAST_TOKENIZER:-true}"
 
 export ALR_LM_EVAL_DIST_BACKEND="${ALR_LM_EVAL_DIST_BACKEND:-gloo}"
 export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-1}"
@@ -81,6 +84,15 @@ fi
 if [ "$USE_TRAINING_PROMPT_TEMPLATE" != "true" ]; then
     EXTRA_ARGS+=(--no_training_prompt_template)
 fi
+if [ -n "$TOKENIZER_PATH" ]; then
+    EXTRA_ARGS+=(--tokenizer_path "$TOKENIZER_PATH")
+fi
+if [ "$LOCAL_FILES_ONLY" = "true" ]; then
+    EXTRA_ARGS+=(--local_files_only)
+fi
+if [ "$USE_FAST_TOKENIZER" != "true" ]; then
+    EXTRA_ARGS+=(--use_slow_tokenizer)
+fi
 EXTRA_ARGS+=(--num_fewshot "$NUM_FEWSHOT")
 
 echo "================================================"
@@ -88,10 +100,13 @@ echo "  ALR lm-evaluation-harness Evaluation"
 echo "  Harness: $HARNESS_PATH"
 echo "  Stage1:  $STAGE1_CHECKPOINT_PATH"
 echo "  Stage2:  $DIFFICULTY_CHECKPOINT_PATH"
+echo "  Tokenizer: ${TOKENIZER_PATH:-auto-stage1-or-model}"
 echo "  Tasks:   $TASKS"
 echo "  Methods: $METHODS"
 echo "  Fewshot: $NUM_FEWSHOT"
 echo "  Training prompt template: $USE_TRAINING_PROMPT_TEMPLATE"
+echo "  Local files only: $LOCAL_FILES_ONLY"
+echo "  Fast tokenizer: $USE_FAST_TOKENIZER"
 echo "  Output:  $OUTPUT_DIR"
 echo "  GPUs:    $NUM_GPUS"
 echo "================================================"
