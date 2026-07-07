@@ -299,6 +299,8 @@ def parse_args():
         nargs="+",
         default=[
             "plain-ar",
+            "zero-256",
+            "random-256",
             "fixed-64",
             "fixed-128",
             "fixed-192",

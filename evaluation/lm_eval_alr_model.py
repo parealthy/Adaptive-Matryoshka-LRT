@@ -330,6 +330,20 @@ def _parse_method(method: str) -> tuple[str, Optional[int]]:
     normalized = method.strip().lower().replace("_", "-")
     if normalized in {"plain", "plain-ar", "base", "base-ar", "no-latent"}:
         return "plain", None
+    if normalized.startswith("zero-"):
+        return "zero", int(normalized.split("-", 1)[1])
+    if normalized.startswith("zero:"):
+        return "zero", int(normalized.split(":", 1)[1])
+    if normalized.startswith("random-vector-"):
+        return "random-vector", int(normalized.removeprefix("random-vector-"))
+    if normalized.startswith("random-vector:"):
+        return "random-vector", int(normalized.removeprefix("random-vector:"))
+    if normalized.startswith("rand-vector-"):
+        return "random-vector", int(normalized.removeprefix("rand-vector-"))
+    if normalized.startswith("rand-"):
+        return "random-vector", int(normalized.split("-", 1)[1])
+    if normalized.startswith("random-"):
+        return "random-vector", int(normalized.split("-", 1)[1])
     if normalized in {"adaptive", "random"}:
         return normalized, None
     if normalized.startswith("fixed-"):
@@ -337,8 +351,8 @@ def _parse_method(method: str) -> tuple[str, Optional[int]]:
     if normalized.startswith("fixed:"):
         return "fixed", int(normalized.split(":", 1)[1])
     raise ValueError(
-        f"Unknown method '{method}'. Use plain-ar, fixed-64, fixed-128, "
-        "fixed-192, fixed-256, random, or adaptive."
+        f"Unknown method '{method}'. Use plain-ar, zero-256, random-256, "
+        "fixed-64, fixed-128, fixed-192, fixed-256, random, or adaptive."
     )
 
 
@@ -445,6 +459,8 @@ class ALRLM(LM):
         self.top_p = float(top_p)
         self.seed = int(seed)
         self.rng = random.Random(self.seed + self.rank)
+        self.random_vector_generator = torch.Generator(device="cpu")
+        self.random_vector_generator.manual_seed(self.seed + self.rank)
         self.trust_remote_code = _as_bool(trust_remote_code)
         self.trace_task = trace_task
         self.use_training_prompt_template = _as_bool(use_training_prompt_template)
@@ -459,9 +475,13 @@ class ALRLM(LM):
         self._trace_counter = 0
         self._trace_handle = self._open_trace(trace_path)
 
-        if self.method_kind == "fixed" and self.fixed_length not in self.latent_trajectory_lengths:
+        fixed_length_methods = {"fixed", "zero", "random-vector"}
+        if (
+            self.method_kind in fixed_length_methods
+            and self.fixed_length not in self.latent_trajectory_lengths
+        ):
             raise ValueError(
-                f"Fixed length {self.fixed_length} is not one of "
+                f"Configured latent length {self.fixed_length} is not one of "
                 f"{self.latent_trajectory_lengths}."
             )
         if self.method_kind == "adaptive" and not difficulty_checkpoint_path:
@@ -518,7 +538,7 @@ class ALRLM(LM):
 
         self.reasoning_network = None
         self.difficulty_estimator = None
-        if self.method_kind != "plain":
+        if self.method_kind in {"fixed", "random", "adaptive"}:
             from modeling.alr_stage1 import LengthElasticTransformerReasoningNet
 
             self.reasoning_network = LengthElasticTransformerReasoningNet(
@@ -855,7 +875,7 @@ class ALRLM(LM):
         probabilities: list[dict[str, float] | None] = [None for _ in range(batch_size)]
         predicted_labels: list[int | None] = [None for _ in range(batch_size)]
 
-        if self.method_kind == "fixed":
+        if self.method_kind in {"fixed", "zero", "random-vector"}:
             latent_lengths = [int(self.fixed_length) for _ in range(batch_size)]
         elif self.method_kind == "random":
             latent_lengths = [self.rng.choice(self.latent_trajectory_lengths) for _ in range(batch_size)]
@@ -940,11 +960,32 @@ class ALRLM(LM):
         until: list[str],
         hf_kwargs: dict,
     ) -> dict:
-        latent_trajectory = self.reasoning_network(
-            hidden_states,
-            attention_mask=attention_mask,
-            active_latent_length=latent_length,
-        ).to(prompt_embeddings.dtype)
+        if self.method_kind == "zero":
+            latent_trajectory = prompt_embeddings.new_zeros(
+                prompt_embeddings.size(0),
+                latent_length,
+                prompt_embeddings.size(-1),
+            )
+        elif self.method_kind == "random-vector":
+            latent_trajectory = torch.randn(
+                (
+                    prompt_embeddings.size(0),
+                    latent_length,
+                    prompt_embeddings.size(-1),
+                ),
+                generator=self.random_vector_generator,
+                dtype=torch.float32,
+            ).to(device=prompt_embeddings.device, dtype=prompt_embeddings.dtype)
+        else:
+            if self.reasoning_network is None:
+                raise RuntimeError(
+                    f"method={self.method} requires a loaded reasoning network."
+                )
+            latent_trajectory = self.reasoning_network(
+                hidden_states,
+                attention_mask=attention_mask,
+                active_latent_length=latent_length,
+            ).to(prompt_embeddings.dtype)
 
         latent_mask = torch.ones(
             latent_trajectory.size(0),

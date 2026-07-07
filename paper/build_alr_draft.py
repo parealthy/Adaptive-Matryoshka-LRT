@@ -9,6 +9,8 @@ from typing import Any, Optional
 
 DEFAULT_METHOD_ORDER = [
     "plain-ar",
+    "zero-256",
+    "random-256",
     "fixed-64",
     "fixed-128",
     "fixed-192",
@@ -41,6 +43,8 @@ def format_float(value: Optional[float], digits: int = 2) -> str:
 def method_label(method: str) -> str:
     labels = {
         "plain-ar": "Plain AR",
+        "zero-256": "Zero Vector 256",
+        "random-256": "Random Vector 256",
         "fixed-64": "Fixed 64",
         "fixed-128": "Fixed 128",
         "fixed-192": "Fixed 192",
@@ -229,7 +233,7 @@ ALR has two stages.
 - Stage 2 checkpoint: `{stage2_path}`
 - Latent lengths: 64, 128, 192, 256
 - Evaluation tasks: GSM8K and MATH-500
-- Main baselines: plain autoregressive decoding, fixed 64/128/192/256 latent lengths, random uniform length, and adaptive ALR
+- Main baselines: plain autoregressive decoding, zero-vector 256, random-vector 256, fixed 64/128/192/256 latent lengths, random uniform length, and adaptive ALR
 - Metrics: answer accuracy from `{accuracy_source}`, average latent length, and latent cost saving relative to fixed-256
 
 ## 4. Results
@@ -248,7 +252,7 @@ The key comparison is adaptive ALR versus fixed-256. A successful run should sho
 
 ## 5. Discussion
 
-Plain autoregressive decoding isolates the frozen base model's capability without latent reasoning vectors. The fixed-length sweep measures how much capability each latent budget provides. Random uniform allocation tests whether cost reduction alone is sufficient. Adaptive ALR tests whether prompt-conditioned allocation can improve the accuracy-cost frontier. If adaptive ALR outperforms random uniform at a similar average latent length, that supports the usefulness of the learned difficulty estimator.
+Plain autoregressive decoding isolates the frozen base model's capability without latent reasoning vectors. Zero-vector and random-vector 256-token ablations keep the latent injection interface fixed while removing trained latent reasoning information. The fixed-length sweep measures how much capability each latent budget provides. Random uniform allocation tests whether cost reduction alone is sufficient. Adaptive ALR tests whether prompt-conditioned allocation can improve the accuracy-cost frontier. If adaptive ALR outperforms random uniform at a similar average latent length, that supports the usefulness of the learned difficulty estimator.
 
 The current label policy is intentionally simple and source-based. It follows the ALR design sketch, but it is not an oracle. Future versions can replace these labels with the shortest latent length that solves each training sample, which may produce a stronger difficulty estimator.
 
