@@ -327,7 +327,9 @@ def _strip_prompt_if_present(text: str, prompt: str) -> str:
 
 
 def _parse_method(method: str) -> tuple[str, Optional[int]]:
-    normalized = method.strip().lower()
+    normalized = method.strip().lower().replace("_", "-")
+    if normalized in {"plain", "plain-ar", "base", "base-ar", "no-latent"}:
+        return "plain", None
     if normalized in {"adaptive", "random"}:
         return normalized, None
     if normalized.startswith("fixed-"):
@@ -335,8 +337,8 @@ def _parse_method(method: str) -> tuple[str, Optional[int]]:
     if normalized.startswith("fixed:"):
         return "fixed", int(normalized.split(":", 1)[1])
     raise ValueError(
-        f"Unknown method '{method}'. Use fixed-64, fixed-128, fixed-192, "
-        "fixed-256, random, or adaptive."
+        f"Unknown method '{method}'. Use plain-ar, fixed-64, fixed-128, "
+        "fixed-192, fixed-256, random, or adaptive."
     )
 
 
@@ -424,22 +426,19 @@ class ALRLM(LM):
         if str(lrt_root_path) not in sys.path:
             sys.path.insert(0, str(lrt_root_path))
 
-        from modeling.alr_difficulty import DifficultyEstimator
-        from modeling.alr_stage1 import LengthElasticTransformerReasoningNet
-
-        self.DifficultyEstimator = DifficultyEstimator
         self.lrt_root = str(lrt_root_path)
         self.model_path = model_path
         self.reasoning_net_path = reasoning_net_path
         self.stage1_checkpoint_path = stage1_checkpoint_path
         self.difficulty_checkpoint_path = difficulty_checkpoint_path
+        self.method = method
+        self.method_kind, self.fixed_length = _parse_method(method)
+        self.DifficultyEstimator = None
         self.latent_trajectory_lengths = _resolve_latent_trajectory_lengths(
             stage1_checkpoint_path,
             difficulty_checkpoint_path,
             latent_trajectory_lengths,
         )
-        self.method = method
-        self.method_kind, self.fixed_length = _parse_method(method)
         self.prompt_max_length = int(prompt_max_length)
         self._max_gen_toks = int(max_gen_toks)
         self._batch_size = 1 if str(batch_size) == "auto" else int(batch_size)
@@ -517,19 +516,26 @@ class ALRLM(LM):
         self.input_device = _model_input_device(self.model)
         self._device = self.input_device
 
-        self.reasoning_network = LengthElasticTransformerReasoningNet(
-            reasoning_net_path,
-            latent_trajectory_length=max(self.latent_trajectory_lengths),
-            hidden_size=_resolve_hidden_size(self.model.config),
-            local_files_only=self.local_files_only,
-        )
-        self.reasoning_network.to(self.input_device)
-        self.reasoning_network.eval()
-        _load_reasoning_weights(self.reasoning_network, stage1_checkpoint_path)
-
+        self.reasoning_network = None
         self.difficulty_estimator = None
+        if self.method_kind != "plain":
+            from modeling.alr_stage1 import LengthElasticTransformerReasoningNet
+
+            self.reasoning_network = LengthElasticTransformerReasoningNet(
+                reasoning_net_path,
+                latent_trajectory_length=max(self.latent_trajectory_lengths),
+                hidden_size=_resolve_hidden_size(self.model.config),
+                local_files_only=self.local_files_only,
+            )
+            self.reasoning_network.to(self.input_device)
+            self.reasoning_network.eval()
+            _load_reasoning_weights(self.reasoning_network, stage1_checkpoint_path)
+
         if self.method_kind == "adaptive":
-            self.difficulty_estimator = DifficultyEstimator.from_pretrained(
+            from modeling.alr_difficulty import DifficultyEstimator
+
+            self.DifficultyEstimator = DifficultyEstimator
+            self.difficulty_estimator = self.DifficultyEstimator.from_pretrained(
                 difficulty_checkpoint_path,
                 map_location="cpu",
             )
@@ -795,6 +801,15 @@ class ALRLM(LM):
         attention_mask = inputs["attention_mask"].to(self.input_device)
 
         with torch.inference_mode():
+            if self.method_kind == "plain":
+                return self._generate_plain_autoregressive(
+                    input_ids,
+                    attention_mask,
+                    max_new_tokens,
+                    until,
+                    hf_kwargs,
+                )
+
             prompt_embeddings = self.model.get_input_embeddings()(input_ids).to(self.model.dtype)
             hidden_states = _last_layer_hidden_states(
                 self.model,
@@ -844,7 +859,7 @@ class ALRLM(LM):
             latent_lengths = [int(self.fixed_length) for _ in range(batch_size)]
         elif self.method_kind == "random":
             latent_lengths = [self.rng.choice(self.latent_trajectory_lengths) for _ in range(batch_size)]
-        else:
+        elif self.method_kind == "adaptive":
             pooled = self.DifficultyEstimator.mean_pool_hidden_states(
                 hidden_states,
                 attention_mask,
@@ -867,11 +882,51 @@ class ALRLM(LM):
                 }
                 for row in probs
             ]
+        else:
+            raise ValueError(f"Unsupported method kind: {self.method_kind}")
 
         return {
             "latent_lengths": latent_lengths,
             "predicted_labels": predicted_labels,
             "length_probabilities": probabilities,
+        }
+
+    def _generate_plain_autoregressive(
+        self,
+        input_ids,
+        attention_mask,
+        max_new_tokens: int,
+        until: list[str],
+        hf_kwargs: dict,
+    ) -> dict:
+        output_ids = self.model.generate(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_new_tokens=max_new_tokens,
+            **hf_kwargs,
+        )
+        continuation_ids = output_ids[:, input_ids.shape[1] :]
+        decoded_outputs = self.tokenizer.batch_decode(
+            continuation_ids,
+            skip_special_tokens=True,
+        )
+
+        completions = []
+        output_token_counts = []
+        for output in decoded_outputs:
+            continuation = _truncate_at_stop(output, until)
+            completions.append(continuation)
+            output_token_counts.append(
+                len(self.tokenizer(continuation, add_special_tokens=False).input_ids)
+            )
+
+        batch_size = input_ids.size(0)
+        return {
+            "completions": completions,
+            "latent_lengths": [0 for _ in range(batch_size)],
+            "predicted_labels": [None for _ in range(batch_size)],
+            "length_probabilities": [None for _ in range(batch_size)],
+            "output_token_counts": output_token_counts,
         }
 
     def _generate_prefilled_fixed_length(

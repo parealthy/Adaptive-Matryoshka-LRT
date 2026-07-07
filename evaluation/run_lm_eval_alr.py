@@ -297,7 +297,15 @@ def parse_args():
     parser.add_argument(
         "--methods",
         nargs="+",
-        default=["fixed-64", "fixed-128", "fixed-192", "fixed-256", "random", "adaptive"],
+        default=[
+            "plain-ar",
+            "fixed-64",
+            "fixed-128",
+            "fixed-192",
+            "fixed-256",
+            "random",
+            "adaptive",
+        ],
     )
     parser.add_argument("--task_include_path", default=str(PROJECT_ROOT / "evaluation" / "lm_eval_tasks"))
     parser.add_argument("--batch_size", default="1")

@@ -16,7 +16,7 @@ fi
 
 OUTPUT_DIR="${OUTPUT_DIR:-eval_outputs/alr_lm_eval_1.5B}"
 TASKS="${TASKS:-gsm8k math500}"
-METHODS="${METHODS:-fixed-64 fixed-128 fixed-192 fixed-256 random adaptive}"
+METHODS="${METHODS:-plain-ar fixed-64 fixed-128 fixed-192 fixed-256 random adaptive}"
 BATCH_SIZE="${BATCH_SIZE:-1}"
 LIMIT="${LIMIT:-}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-2048}"
