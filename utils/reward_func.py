@@ -20,7 +20,7 @@ def accuracy_reward(completions: list[list[dict[str, str]]], solution: list[str]
             signature to ensure compatibility with trainers like [`GRPOTrainer`].
     Example:
     ```python
-    >>> from trl.rewards import accuracy_reward
+    >>> from utils.reward_func import accuracy_reward
 
     >>> solution = [r"\frac{1}{3}", r"\frac{1}{3}"]
     >>> completion = [
@@ -69,38 +69,4 @@ def accuracy_reward(completions: list[list[dict[str, str]]], solution: list[str]
             reward = float(content.strip().lower() == sol.strip().lower())
         rewards.append(reward)
 
-    return rewards
-
-
-def length_penalty_reward(
-    completions: list[list[dict[str, str]]],
-    max_completion_length: int = 1024,
-    completion_token_lengths: list[int] | None = None,
-    **kwargs,
-) -> list[float]:
-    """Penalizes completions that are close to or at the maximum length.
-
-    Returns 0.0 for short completions and a negative penalty that increases
-    as the completion approaches max_completion_length.  The penalty ramps
-    linearly once the completion exceeds 80% of max_completion_length.
-
-    If ``completion_token_lengths`` is provided (list of per-sample token
-    counts), it is used directly.  Otherwise the function falls back to
-    estimating token count from character length (chars / 3.5).
-    """
-    threshold = int(max_completion_length * 0.8)
-    rewards = []
-    for i, completion in enumerate(completions):
-        if completion_token_lengths is not None:
-            length = completion_token_lengths[i]
-        else:
-            # Rough token estimate when actual counts are unavailable
-            content = completion[0]["content"]
-            length = int(len(content) / 3.5)
-        if length <= threshold:
-            rewards.append(0.0)
-        else:
-            # Linear penalty from 0 to -1 as length goes from threshold to max
-            overshoot = (length - threshold) / max(max_completion_length - threshold, 1)
-            rewards.append(-min(overshoot, 1.0))
     return rewards

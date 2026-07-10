@@ -14,7 +14,6 @@ from typing import Any, Optional
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_HARNESS_PATH = Path("/Users/focus/Desktop/paper/s1/eval/lm-evaluation-harness")
 
 
 def parse_list(value: str) -> list[str]:
@@ -93,14 +92,17 @@ def patch_transformers_harness_compat() -> None:
     _LazyModule._alr_vision2seq_patch = True
 
 
-def import_harness(harness_path: Path):
-    harness_path = harness_path.expanduser().resolve()
-    if not harness_path.exists():
-        raise FileNotFoundError(f"lm-evaluation-harness path does not exist: {harness_path}")
-    if str(harness_path) not in sys.path:
-        sys.path.insert(0, str(harness_path))
+def import_harness(harness_path: Optional[Path]):
+    """Load lm-eval from the installed package or an explicitly supplied checkout."""
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
+
+    if harness_path is not None:
+        harness_path = harness_path.expanduser().resolve()
+        if not harness_path.exists():
+            raise FileNotFoundError(f"lm-evaluation-harness path does not exist: {harness_path}")
+        if str(harness_path) not in sys.path:
+            sys.path.insert(0, str(harness_path))
 
     patch_transformers_harness_compat()
     import evaluation.lm_eval_alr_model  # noqa: F401
@@ -279,7 +281,14 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Run ALR through lm-evaluation-harness and summarize latent cost traces.",
     )
-    parser.add_argument("--harness_path", default=str(DEFAULT_HARNESS_PATH))
+    parser.add_argument(
+        "--harness_path",
+        default=None,
+        help=(
+            "Optional path to an lm-evaluation-harness checkout. By default, "
+            "the lm-eval package installed from requirements.txt is used."
+        ),
+    )
     parser.add_argument("--model_path", default="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
     parser.add_argument("--reasoning_net_path", default="Qwen/Qwen3-Embedding-0.6B")
     parser.add_argument("--tokenizer_path", default=None)
@@ -333,12 +342,16 @@ def parse_args():
 def main() -> None:
     args = parse_args()
     args.tasks = [normalize_task_name(task) for task in args.tasks]
-    harness_path = Path(args.harness_path)
+    harness_path = Path(args.harness_path) if args.harness_path else None
     _, evaluator, TaskManager = import_harness(harness_path)
 
     summary: dict[str, Any] = {
         "config": {
-            "harness_path": str(harness_path.expanduser().resolve()),
+            "harness_path": (
+                str(harness_path.expanduser().resolve())
+                if harness_path is not None
+                else "installed-package"
+            ),
             "model_path": args.model_path,
             "reasoning_net_path": args.reasoning_net_path,
             "tokenizer_path": args.tokenizer_path,

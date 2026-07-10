@@ -3,8 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
-import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from glob import glob
 from typing import Optional
 
@@ -15,14 +14,8 @@ from transformers import (
     AutoTokenizer,
     HfArgumentParser,
     Trainer,
+    TrainingArguments,
 )
-
-sys.path.append("trl/")
-LOCAL_TRL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trl")
-if LOCAL_TRL_PATH not in sys.path:
-    sys.path.append(LOCAL_TRL_PATH)
-
-from trl import SFTConfig
 
 from modeling.alr_stage1 import (
     LengthElasticLatentTransformerReasoningModel,
@@ -34,7 +27,7 @@ DEFAULT_LATENT_TRAJECTORY_LENGTHS = "64,128,192,256"
 
 
 @dataclass
-class ALRStage1SFTConfig(SFTConfig):
+class ALRStage1SFTConfig(TrainingArguments):
     slow_thinking_model_path: str = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
     reasoning_net_path: str = "Qwen/Qwen3-Embedding-0.6B"
     latent_trajectory_lengths: str = DEFAULT_LATENT_TRAJECTORY_LENGTHS
@@ -43,8 +36,6 @@ class ALRStage1SFTConfig(SFTConfig):
     dataset_name: str = "open-r1/OpenR1-Math-220k"
     prompt_max_length: int = 2048
     completion_max_length: int = 2048
-    dataset_kwargs: dict = field(default_factory=lambda: {"skip_prepare_dataset": True})
-
     output_dir: str = "./checkpoints/ALR-Stage1-DSR1-Qwen-1.5B"
     logging_dir: str = "logs"
     num_train_epochs: int = 3
@@ -52,7 +43,6 @@ class ALRStage1SFTConfig(SFTConfig):
     per_device_eval_batch_size: int = 4
     gradient_accumulation_steps: int = 1
     gradient_checkpointing: bool = False
-    average_tokens_across_devices: bool = False
 
     learning_rate: float = 1e-5
     lr_scheduler_type: str = "cosine"
@@ -75,8 +65,6 @@ class ALRStage1SFTConfig(SFTConfig):
 
     report_to: str = "tensorboard"
     run_name: Optional[str] = "alr-stage1-length-elastic"
-    use_liger: bool = False
-
     log_active_length: bool = True
     active_length_log_interval: int = 100
 

@@ -1,8 +1,14 @@
-torch
-transformers
-accelerate
-deepspeed
-safetensors
-datasets
-latex2sympy2-extended
-math-verify
+# Core training stack. Install a CUDA-matched PyTorch wheel first when needed.
+torch>=2.4,<2.7
+transformers>=4.46,<4.53
+accelerate>=0.34,<1.7
+deepspeed>=0.14.4,<0.17
+datasets>=2.21,<3.5
+safetensors>=0.4,<0.6
+tensorboard>=2.14,<2.19
+
+# Evaluation and mathematical answer verification.
+lm-eval>=0.4.8,<0.4.9
+latex2sympy2-extended>=1.0
+math-verify>=0.7
+tqdm>=4.66
